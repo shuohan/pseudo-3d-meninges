@@ -67,13 +67,19 @@ class ContentsBuilder:
                             self.args.image_save_step, 't')
 
     def _set_im_savers(self, dirname, step, prefix):
-        attrs = ['_'.join([prefix, a]) for a in self.contents.attrs[:-1]]
-        im_saver = ImageSaver(dirname, self._save_png, attrs=attrs, step=step)
+        # im_attrs = [a for a in self.contents.attrs if 'pred' not in a]
+        # seg_attrs = ['mask_pred']
+        # im_attrs = ['_'.join([prefix, a]) for a in im_attrs]
+        # seg_attrs = ['_'.join([prefix, a]) for a in seg_attrs]
+        # print(seg_attrs, im_attrs)
+
+        im_attrs = ['_'.join([prefix, a]) for a in self.contents.attrs]
+        print(im_attrs)
+        im_saver = ImageSaver(dirname, self._save_png, attrs=im_attrs, step=step)
         self.contents.register(im_saver)
-        attrs = ['_'.join([prefix, a]) for a in self.contents.attrs[-1:]]
-        seg_saver = ImageSaver(dirname, self._save_seg, attrs=attrs, step=step,
-                               ind_offset=len(self.contents.attrs[:-1]))
-        self.contents.register(seg_saver)
+        # seg_saver = ImageSaver(dirname, self._save_seg, attrs=seg_attrs,
+        #                        step=step, ind_offset=len(im_attrs))
+        # self.contents.register(seg_saver)
 
 
 class ContentsBuilderValid(ContentsBuilder):
@@ -104,15 +110,17 @@ class Contents(_Contents):
         output_pred_attrs = [oa + '_pred' for oa in output_attrs]
         self.attrs.extend(output_attrs)
         self.attrs.extend(output_pred_attrs)
+        self.attrs.extend(['edge', 'ls', 'ls_pred'])
 
-        self._cpu_attrs = [a for a in self.attrs if 'pred' not in a]
-        self._cuda_attrs = [a for a in self.attrs if 'pred' in a]
+        self._cpu_attrs = [a for a in self.attrs if 'pred' not in a and a != 'edge']
+        self._cuda_attrs = [a for a in self.attrs if 'pred' in a or a == 'edge']
         for attr in self._cpu_attrs:
             self.set_tensor_cpu('t_' + attr, None, name=None)
         for attr in self._cuda_attrs:
             self.set_tensor_cuda('t_' + attr, None, name=None)
         self.set_value('t_ct_loss', float('nan'))
         self.set_value('t_mask_loss', float('nan'))
+        self.set_value('t_ls_loss', float('nan'))
         self.set_value('t_total_loss', float('nan'))
 
 
@@ -125,6 +133,7 @@ class ContentsValid(Contents):
             self.set_tensor_cuda('v_' + attr, None, name=None)
         self.set_value('v_ct_loss', float('nan'))
         self.set_value('v_mask_loss', float('nan'))
+        self.set_value('v_ls_loss', float('nan'))
         self.set_value('v_total_loss', float('nan'))
         self.set_value('min_v_loss', float('inf'))
         self.set_value('min_v_epoch', float('nan'))

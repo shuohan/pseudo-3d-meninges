@@ -106,7 +106,9 @@ class OutBlock(torch.nn.Module):
         mask = torch.sigmoid(mask)
         levelset = self.levelset_conv(x)
         blur = F.conv2d(mask, self.gauss, padding=self._gauss_padding)
-        edge = F.conv2d(blur, self.sobel, padding=self._sobel_padding)
+
+        blur = F.pad(blur, self._sobel_padding * 2, mode='replicate')
+        edge = F.conv2d(blur, self.sobel)
         edge = torch.sqrt(torch.sum(edge * edge, dim=1, keepdim=True))
         # print(mask.shape, levelset.shape, edge.shape)
         return mask, levelset, edge

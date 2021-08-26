@@ -46,7 +46,7 @@ class Trainer:
             elif self.args.output_data_mode == 'ct':
                 self._train_batch_ct_only(data[:-1], data[-1])
             elif self.args.output_data_mode == 'mask':
-                self._train_batch_mask_only(data[:-1], data[-1])
+                self._train_batch_mask_only(data[:-2], data[-2], data[-1])
 
             self._contents.notify_observers()
 
@@ -103,15 +103,22 @@ class Trainer:
         self._contents.set_tensor_cuda('t_ct_pred', ct_pred, ct.name)
         self._contents.set_tensor_cuda('t_mask_pred', mask_pred, mask.name)
 
-    def _train_batch_mask_only(self, input_data, mask):
-        mask_pred = self._apply_network_train(input_data)
-        loss = self._mask_loss_func(mask_pred, mask.data.cuda())
+    def _train_batch_mask_only(self, input_data, mask, ls):
+        mask_pred, ls_pred, edge = self._apply_network_train(input_data)
+        mask_loss, ls_loss, loss = self._calc_mask_losses(
+            mask_pred, ls_pred, edge, mask.data.cuda(), ls.data.cuda())
+
         loss.backward()
         self._optim.step()
 
-        self._contents.set_value('t_mask_loss', loss.item())
+        self._contents.set_value('t_mask_loss', mask_loss.item())
+        self._contents.set_value('t_ls_loss', ls_loss.item())
+        self._contents.set_value('t_total_loss', loss.item())
         self._contents.set_tensor_cpu('t_mask', mask.data, mask.name)
         self._contents.set_tensor_cuda('t_mask_pred', mask_pred, mask.name)
+        self._contents.set_tensor_cpu('t_ls', ls.data, ls.name)
+        self._contents.set_tensor_cuda('t_ls_pred', ls_pred, ls.name)
+        self._contents.set_tensor_cuda('t_edge', edge, mask.name)
 
     def _train_batch_ct_only(self, input_data, ct):
         ct_pred = self._apply_network_train(input_data)
@@ -160,7 +167,8 @@ class Trainer:
 
     def _create_loss_funcs(self):
         self._ct_loss_func = torch.nn.L1Loss()
-        self._mask_loss_func = torch.nn.BCEWithLogitsLoss()
+        # self._mask_loss_func = torch.nn.BCEWithLogitsLoss()
+        self._mask_loss_func = torch.nn.BCELoss()
 
     def _create_contents(self):
         builder = ContentsBuilder(self._model, self._optim, self.args)
@@ -191,6 +199,13 @@ class Trainer:
             loss = self.args.lambda_ct * ct_loss + self.args.lambda_mask * mask_loss
 
         return ct_loss, mask_loss, loss
+
+    def _calc_mask_losses(self, mask_pred, ls_pred, edge, mask, ls):
+        mask_loss = self._mask_loss_func(mask_pred, mask.data.cuda())
+        error = edge.detach() * (ls_pred - ls)
+        ls_loss = torch.mean(torch.abs(error))
+        loss = self.args.lambda_ls * ls_loss + self.args.lambda_mask * mask_loss
+        return mask_loss, ls_loss, loss
 
     def _get_skip_im_types(self):
         skip = list()
@@ -235,7 +250,7 @@ class TrainerValid(Trainer):
             elif self.args.output_data_mode == 'ct':
                 self._train_batch_ct_only(data[:-1], data[-1])
             elif self.args.output_data_mode == 'mask':
-                self._train_batch_mask_only(data[:-1], data[-1])
+                self._train_batch_mask_only(data[:-2], data[-2], data[-1])
 
             if self._needs_to_valid():
                 self._model.eval()
@@ -258,13 +273,13 @@ class TrainerValid(Trainer):
             self._contents.set_tensor_cpu('v_t2w', self._t2w.data, self._t2w.name)
         return pred
 
-    def _valid_epoch(self, input_data):
+    def _valid_epoch(self):
         if self.args.output_data_mode == 'ct_mask':
-            self._valid_epoch_both(input_data)
+            self._valid_epoch_both()
         elif self.args.output_data_mode == 'ct':
-            self._valid_epoch_ct_only(input_data)
+            self._valid_epoch_ct_only()
         elif self.args.output_data_mode == 'mask':
-            self._valid_epoch_mask_only(input_data)
+            self._valid_epoch_mask_only()
 
     def _valid_epoch_both(self):
         ct_losses = list()
@@ -296,17 +311,31 @@ class TrainerValid(Trainer):
 
     def _valid_epoch_mask_only(self):
         mask_losses = list()
+        ls_losses = list()
+        losses = list()
         for j, data in enumerate(self._valid_loader):
             with torch.no_grad():
-                mask = data[-1]
-                input_data = data[:-1]
-                mask_pred = self._apply_network_valid(input_data)
-                loss = self._mask_loss_func(mask_pred, mask.data.cuda())
-            mask_losses.append(loss.item())
+                mask = data[-2]
+                ls = data[-1]
+                input_data = data[:-2]
+                mask_pred, ls_pred, edge = self._apply_network_valid(input_data)
+                mask_loss, ls_loss, loss = self._calc_mask_losses(
+                    mask_pred, ls_pred, edge, mask.data.cuda(), ls.data.cuda())
+            losses.append(loss.item())
+            mask_losses.append(mask_loss.item())
+            ls_losses.append(ls_loss.item())
+
+        self._contents.set_value('v_mask_loss', np.mean(mask_losses))
+        self._contents.set_value('v_ls_loss', np.mean(ls_losses))
+        self._contents.set_value('v_total_loss', np.mean(losses))
+
         self._contents.set_tensor_cpu('v_mask', mask.data, mask.name)
         self._contents.set_tensor_cuda('v_mask_pred', mask_pred, mask.name)
-        self._contents.set_value('v_mask_loss', np.mean(mask_losses))
-        self._contents.update_valid_loss(np.mean(mask_losses))
+        self._contents.set_tensor_cpu('v_ls', ls.data, ls.name)
+        self._contents.set_tensor_cuda('v_ls_pred', ls_pred, ls.name)
+        self._contents.set_tensor_cuda('v_edge', edge, mask.name)
+
+        self._contents.update_valid_loss(np.mean(losses))
 
     def _valid_epoch_ct_only(self):
         ct_losses = list()

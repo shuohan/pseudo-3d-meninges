@@ -19,9 +19,9 @@ parser.add_argument('-e', '--num-epochs', type=int, default=60,
                     help='Number of training epochs')
 parser.add_argument('-l', '--learning-rate', type=float, default=0.0002,
                     help='Learning rate for the generator.')
-parser.add_argument('-1', '--lambda-ct', type=float, default=2,
+parser.add_argument('-1', '--lambda-ls', type=float, default=1,
                     help='Weighting for CT synthesis.')
-parser.add_argument('-2', '--lambda-mask', type=float, default=100,
+parser.add_argument('-2', '--lambda-mask', type=float, default=1,
                     help='Weighting for intracranial segmentation.')
 parser.add_argument('-T', '--target-shape', type=int, default=(288, 288),
                     nargs=2, help='Pad or crop the slices to this shape.')
@@ -42,7 +42,7 @@ parser.add_argument('-F', '--finetune', action='store_true')
 args = parser.parse_args()
 
 
-from ct_synth.train import Trainer, TrainerValid
+from deep_meninges.train import Trainer, TrainerValid
 
 
 trainer = TrainerValid(args) if args.valid_dir else Trainer(args)

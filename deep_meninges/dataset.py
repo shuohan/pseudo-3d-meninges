@@ -96,7 +96,7 @@ class SubjectData:
 
     def _get_sort_keys(self, name):
         # use dict in case one of the contrast is missing
-        sort_keys = {'t1w': 0, 't2w': 1, 'ct': 2, 'mask': 3}
+        sort_keys = {'t1w': 0, 't2w': 1, 'ct': 2, 'mask': 3, 'sdf': 4}
         return sort_keys[name]
 
     def _check_im_types(self, filenames):
