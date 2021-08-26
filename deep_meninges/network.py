@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 
 from pytorch_unet.blocks import _ConvBlock, _ContractingBlock
 from pytorch_unet.blocks import _ExpandingBlock, _TransUpBlock
@@ -78,7 +79,7 @@ class TransUpBlock(_TransUpBlock):
         return Resize(0.5, 1)
 
 
-class OutBlock(nn.Module):
+class OutBlock(torch.nn.Module):
     def __init__(self, in_channels, sigma=1, gauss_size=7):
         super().__init__()
         self.in_channels = in_channels
@@ -92,22 +93,22 @@ class OutBlock(nn.Module):
         kernel = get_gaussian_kernel2d((size, size), (sigma, sigma))
         kernel = normalize_kernel2d(kernel)[None, None]
         self.register_buffer('gauss', kernel)
-        self._gauss_padding = size // 2
+        self._gauss_padding = (size // 2, ) * 2
 
     def _init_sobel(self):
         kernel = get_spatial_gradient_kernel2d('sobel', 1)
-        kernel = normalize_kernel2d(kernel)[None, None]
-        kernel = kernel.flip(-3)
+        kernel = normalize_kernel2d(kernel).unsqueeze(1)
         self.register_buffer('sobel', kernel)
-        self._sobel_padding = 1
-
+        self._sobel_padding = (1, 1)
 
     def forward(self, x):
         mask = self.mask_conv(x)
         mask = torch.sigmoid(mask)
-        blur = F.conv2d(x, self.gauss, padding=self._gauss_padding)
-        edge = F.conv2d(blur, self.sobel, padding=self._sobel_padding)
         levelset = self.levelset_conv(x)
+        blur = F.conv2d(mask, self.gauss, padding=self._gauss_padding)
+        edge = F.conv2d(blur, self.sobel, padding=self._sobel_padding)
+        edge = torch.sqrt(torch.sum(edge * edge, dim=1, keepdim=True))
+        print(mask.shape, levelset.shape, edge.shape)
         return mask, levelset, edge
 
     # def _init_gauss(self, sigma, size):
