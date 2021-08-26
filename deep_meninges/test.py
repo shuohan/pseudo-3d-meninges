@@ -4,6 +4,7 @@ import numpy as np
 import nibabel as nib
 from pathlib import Path
 from scipy.ndimage.measurements import label as find_cc
+from copy import deepcopy
 
 from .network import UNet
 from .dataset import ImageSlices
@@ -119,15 +120,29 @@ class TesterMask(TesterBoth):
 
     def test(self):
         masks = list()
+        levelsets = list()
         for axis, tester in enumerate(self._testers):
-            mask = tester.test()
+            mask, ls = tester.test()
             mask = padcrop(mask, self._nifti[0].shape)
+            ls = padcrop(ls, self._nifti[0].shape)
             self._save_image(mask, 'mask_axis-%d' % axis)
+            self._save_image(ls, 'ls_axis-%d' % axis)
             masks.append(mask)
+            levelsets.append(ls)
         mask = self._combine_images(masks)
         mask = self._cleanup_mask(mask)
+        ls = self._combine_images(levelsets)
         self._save_image(mask > 0.5, 'mask')
+        self._save_image(ls, 'ls')
+        fusion = self._fuse_mask_ls(mask, ls)
+        self._save_image(fusion, 'fusion')
 
+    def _fuse_mask_ls(self, mask, ls):
+        inv_mask = np.logical_not(mask)
+        result_ls = deepcopy(ls)
+        result_ls[mask] = np.clip(ls[mask], -self.args.max_ls_value, 0)
+        result_ls[inv_mask] = np.clip(ls[inv_mask], 0, self.args.max_ls_value)
+        return result_ls
 
 class CalcMedian:
     def __call__(self, images):
@@ -218,10 +233,13 @@ class TesterMask_(TesterBoth_):
     def test(self):
         self.model = self.model.eval()
         mask_slices = list()
+        ls_slices = list()
         with torch.no_grad():
             for data in self._extract_slices():
-                mask = self.model(data)
-                mask = torch.sigmoid(mask)
+                mask, ls, edge = self.model(data)
+                # mask = torch.sigmoid(mask)
                 mask_slices.append(mask.cpu().numpy())
+                ls_slices.append(ls.cpu().numpy())
         mask = self.combine_slices(mask_slices)
-        return mask
+        ls = self.combine_slices(ls_slices)
+        return mask, ls
