@@ -17,9 +17,10 @@ parser.add_argument('-C', '--combine', choices={'median', 'mean'},
                     default='median')
 parser.add_argument('-O', '--output-data-mode', default='ct_mask',
                     choices={'ct_mask', 'ct', 'mask'})
+parser.add_argument('-M', '--max-ls-value', default=4, type=float)
 args = parser.parse_args()
 
-from ct_synth.test import TesterBoth, TesterCT, TesterMask
+from deep_meninges.test import TesterBoth, TesterCT, TesterMask
 
 
 if args.t1w and args.t2w:
