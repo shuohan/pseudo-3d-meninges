@@ -14,7 +14,7 @@ from kornia.filters.kernels import get_gaussian_kernel2d
 class Resize(torch.nn.Module):
     def __init__(self, dxyz, order=1):
         super().__init__()
-        self.dxyz = dxyz
+        self.dxyz = (dxyz, ) * 2
         self.order = order
         self._resizer = None
 
@@ -80,7 +80,7 @@ class TransUpBlock(_TransUpBlock):
 
 
 class OutBlock(torch.nn.Module):
-    def __init__(self, in_channels, sigma=1, gauss_size=7):
+    def __init__(self, in_channels, sigma=3, gauss_size=7):
         super().__init__()
         self.in_channels = in_channels
         self._init_gauss(sigma, gauss_size)
@@ -108,7 +108,7 @@ class OutBlock(torch.nn.Module):
         blur = F.conv2d(mask, self.gauss, padding=self._gauss_padding)
         edge = F.conv2d(blur, self.sobel, padding=self._sobel_padding)
         edge = torch.sqrt(torch.sum(edge * edge, dim=1, keepdim=True))
-        print(mask.shape, levelset.shape, edge.shape)
+        # print(mask.shape, levelset.shape, edge.shape)
         return mask, levelset, edge
 
     # def _init_gauss(self, sigma, size):
@@ -140,4 +140,4 @@ class UNet(_UNet):
         return ExpandingBlock(in_channels, shortcut_channels, out_channels)
 
     def _create_out(self, in_channels):
-        return torch.nn.Conv2d(in_channels, self.out_channels, 1, bias=True)
+        return OutBlock(in_channels)

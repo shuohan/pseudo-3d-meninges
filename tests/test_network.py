@@ -3,11 +3,11 @@
 import torch
 from pytorchviz import make_dot
 
-from ct_synth.network import UNet
+from deep_meninges.network import UNet
 
 
-x = torch.rand([2, 2, 288, 288]).float().cuda()
-net = UNet(2, 2, 5, 32).cuda()
+x = torch.rand([2, 2, 32, 32]).float().cuda()
+net = UNet(2, 2, 3, 8).cuda()
 print(net)
 dot = make_dot(x, net)
 dot.render('network')
