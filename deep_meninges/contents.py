@@ -1,5 +1,5 @@
 from copy import deepcopy
-from ptxl.abstract import Contents as _Contents
+from ptxl.abstract import Contents
 from ptxl.utils import Counter, Counters
 from ptxl.log import Logger, MultiTqdmPrinter
 from ptxl.save import ImageSaver as _ImageSaver
@@ -12,11 +12,41 @@ class ContentsBuilder:
         self.model = model
         self.optim = optim
         self.args = args
+        self._contents_cls = Contents
+        self._checkpont_saver_cls = CheckpointSaver
+        self._init_tensor_attrs()
+        self._init_value_attrs()
 
-        zoom = {'zoom': args.image_save_zoom}
-        self._save_png = create_save_image('png_norm', 'image', zoom)
-        self._save_seg = create_save_image('png', 'sigmoid', zoom)
-        # self._save_seg = create_save_image('png_norm', 'image', zoom)
+    def _init_tensor_attrs(self):
+        in_attrs = self.args.input_data_mode.split('_')
+        out_attrs = self._parse_out_data_mode()
+        self._tensor_attrs = in_attrs + out_attrs
+
+    def _init_value_attrs(self):
+        attrs = self._parse_out_data_mode()
+        self._value_attrs = list()
+        for k, v in attrs.items():
+            self._value_attrs.append('_'.join(['t', k, v]))
+
+    def _get_out_attrs(self):
+        attrs = self._parse_out_data_mode()
+        for attr_key, attr_val in attrs.items():
+            assert 'mask' in attr_val
+            assert 'sdf' in attr_val
+        for k in attrs.keys():
+            attrs[k].append('edge')
+            attrs[k].extend([v + '_pred' for v in attrs[k]])
+        return attrs
+
+    def _parse_out_data_mode(self):
+        attrs_tmp = self.args.output_data_mode.split('_')
+        attrs = dict()
+        for attr in attrs_tmp:
+            k, v = attr.split('-')
+            if k not in attrs:
+                attrs[k] = list()
+            attrs.append(v)
+        return attrs
 
     @property
     def contents(self):
@@ -35,8 +65,14 @@ class ContentsBuilder:
         return counter
 
     def _create_contents(self, counter):
-        return Contents(self.model, self.optim, counter,
-                        self.args.input_data_mode, self.args.output_data_mode)
+        contents = self._contents_cls(
+            self.model,
+            self.optim,
+            counter,
+            self.args.input_data_mode,
+            self.args.output_data_mode
+        )
+        return contents
 
     def _set_observers(self):
         self._set_printer()
@@ -45,12 +81,12 @@ class ContentsBuilder:
         self._set_train_savers()
 
     def _set_printer(self):
-        attrs = self._get_value_attrs()
+        attrs = self._value_attrs()
         printer = MultiTqdmPrinter(attrs=attrs)
         self.contents.register(printer)
 
     def _set_logger(self):
-        attrs = self._get_value_attrs()
+        attrs = self._value_attrs()
         logger = Logger(self.args.loss_filename, attrs=attrs)
         self.contents.register(logger)
 
@@ -58,87 +94,54 @@ class ContentsBuilder:
         return self.contents.get_value_attrs()
 
     def _set_checkpoint_saver(self):
-        cp_saver = CheckpointSaver(self.args.output_checkpoint_dir,
-                                   step=self.args.checkpoint_save_step)
+        cp_saver = self._checkpont_saver_cls(
+            self.args.output_checkpoint_dir,
+            step=self.args.checkpoint_save_step
+        )
         self.contents.register(cp_saver)
 
     def _set_train_savers(self):
-        self._set_im_savers(self.args.train_image_dir,
-                            self.args.image_save_step, 't')
+        self._set_im_savers(
+            self.args.train_image_dir,
+            self.args.image_save_step, 't'
+        )
 
     def _set_im_savers(self, dirname, step, prefix):
-        # im_attrs = [a for a in self.contents.attrs if 'pred' not in a]
-        # seg_attrs = ['mask_pred']
-        # im_attrs = ['_'.join([prefix, a]) for a in im_attrs]
-        # seg_attrs = ['_'.join([prefix, a]) for a in seg_attrs]
-        # print(seg_attrs, im_attrs)
-
-        im_attrs = ['_'.join([prefix, a]) for a in self.contents.attrs]
-        print(im_attrs)
-        im_saver = ImageSaver(dirname, self._save_png, attrs=im_attrs, step=step)
-        self.contents.register(im_saver)
-        # seg_saver = ImageSaver(dirname, self._save_seg, attrs=seg_attrs,
-        #                        step=step, ind_offset=len(im_attrs))
-        # self.contents.register(seg_saver)
+        save_png = create_save_image('png_norm', 'image')
+        attrs = ['_'.join([prefix, a]) for a in self._tensor_attrs]
+        saver = ImageSaver(dirname, save_png, attrs=attrs, step=step)
+        self.contents.register(saver)
 
 
 class ContentsBuilderValid(ContentsBuilder):
     def _set_observers(self):
         super()._set_observers()
+        self._contents_cls = ContentsValid
+        self._checkpont_saver_cls = CheckpointSaverValid
+
+    def _set_observers(self):
+        super()._set_observers()
         self._set_valid_savers()
 
     def _set_valid_savers(self):
-        self._set_im_savers(self.args.valid_image_dir,
-                            self.args.valid_save_step, 'v')
-
-    def _create_contents(self, counter):
-        return ContentsValid(self.model, self.optim, counter,
-                             self.args.input_data_mode,
-                             self.args.output_data_mode)
-
-    def _set_checkpoint_saver(self):
-        cp_saver = CheckpointSaverValid(self.args.output_checkpoint_dir,
-                                        step=self.args.checkpoint_save_step)
-        self.contents.register(cp_saver)
-
-
-class Contents(_Contents):
-    def __init__(self, model, optim, counter, input_data_mode, output_data_mode):
-        super().__init__(model, optim, counter)
-        self.attrs = input_data_mode.split('_')
-        output_attrs = output_data_mode.split('_')
-        output_pred_attrs = [oa + '_pred' for oa in output_attrs]
-        self.attrs.extend(output_attrs)
-        self.attrs.extend(output_pred_attrs)
-        self.attrs.extend(['edge', 'ls', 'ls_pred'])
-
-        self._cpu_attrs = [a for a in self.attrs if 'pred' not in a and a != 'edge']
-        self._cuda_attrs = [a for a in self.attrs if 'pred' in a or a == 'edge']
-        for attr in self._cpu_attrs:
-            self.set_tensor_cpu('t_' + attr, None, name=None)
-        for attr in self._cuda_attrs:
-            self.set_tensor_cuda('t_' + attr, None, name=None)
-        self.set_value('t_ct_loss', float('nan'))
-        self.set_value('t_mask_loss', float('nan'))
-        self.set_value('t_ls_loss', float('nan'))
-        self.set_value('t_total_loss', float('nan'))
+        self._set_im_savers(
+            self.args.valid_image_dir,
+            self.args.valid_save_step, 'v'
+        )
 
 
 class ContentsValid(Contents):
-    def __init__(self, model, optim, counter, input_data_mode, output_data_mode):
-        super().__init__(model, optim, counter, input_data_mode, output_data_mode)
-        for attr in self._cpu_attrs:
-            self.set_tensor_cpu('v_' + attr, None, name=None)
-        for attr in self._cuda_attrs:
-            self.set_tensor_cuda('v_' + attr, None, name=None)
-        self.set_value('v_ct_loss', float('nan'))
-        self.set_value('v_mask_loss', float('nan'))
-        self.set_value('v_ls_loss', float('nan'))
-        self.set_value('v_total_loss', float('nan'))
-        self.set_value('min_v_loss', float('inf'))
-        self.set_value('min_v_epoch', float('nan'))
+    def __init__(self, model, optim, counter):
+        super().__init__(model, optim, counter)
         self.best_model_state = self.model.state_dict()
         self.best_optim_state = self.optim.state_dict()
+
+    def _init_value_attrs(self):
+        attrs = self._parse_out_data_mode()
+        self._value_attrs = list()
+        for k, v in attrs.items():
+            self._value_attrs.append('_'.join(['t', k, v]))
+            self._value_attrs.append('_'.join(['v', k, v]))
 
     def update_valid_loss(self, valid_loss):
         valid_loss = valid_loss
@@ -149,13 +152,8 @@ class ContentsValid(Contents):
             self.set_value('min_v_epoch', epoch_ind)
             self.best_model_state = deepcopy(self.model.state_dict())
             self.best_optim_state = deepcopy(self.optim.state_dict())
-            # print('\nkeep best', self.best_model_state['cb0.conv0.conv.weight'].sum(),
-            #       self.model.state_dict()['cb0.conv0.conv.weight'].sum())
 
     def get_model_state_dict(self):
-        # print('\nSave best into disk',
-        #       self.best_model_state['cb0.conv0.conv.weight'].sum(),
-        #       self.model.state_dict()['cb0.conv0.conv.weight'].sum())
         return self.best_model_state
 
     def get_optim_state_dict(self):
