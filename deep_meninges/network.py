@@ -80,14 +80,16 @@ class TransUpBlock(_TransUpBlock):
 
 
 class OutBlock(torch.nn.Module):
-    def __init__(self, in_channels, sigma=3, gauss_size=7):
+    def __init__(self, in_channels, out_channels, sigma=3, gauss_size=7):
         super().__init__()
         self.in_channels = in_channels
+        self.out_channels = out_channels
         self._init_gauss(sigma, gauss_size)
         self._init_sobel()
-
-        self.mask_conv = torch.nn.Conv2d(self.in_channels, 1, 1)
-        self.levelset_conv = torch.nn.Conv2d(self.in_channels, 1, 1)
+        self.convs = torch.nn.ModuleList([
+            torch.nn.Conv2d(self.in_channels, 1, 1)
+            for _ in range(self.out_channels)
+        ])
 
     def _init_gauss(self, sigma, size):
         kernel = get_gaussian_kernel2d((size, size), (sigma, sigma))
@@ -102,32 +104,53 @@ class OutBlock(torch.nn.Module):
         self._sobel_padding = (1, 1)
 
     def forward(self, x):
-        mask = self.mask_conv(x)
+        mask = self.convs[0](x)
         mask = torch.sigmoid(mask)
-        levelset = self.levelset_conv(x)
+        levelset = self.convs[1](x)
+        others = [conv(x) for conv in self.convs[2:]]
 
-        mask_pad = F.pad(mask, self._gauss_padding * 2, mode='replicate')
-        blur = F.conv2d(mask_pad, self.gauss)
+        with torch.no_grad():
+            mask_pad = F.pad(mask, self._gauss_padding * 2, mode='replicate')
+            blur = F.conv2d(mask_pad, self.gauss)
+            blur = F.pad(blur, self._sobel_padding * 2, mode='replicate')
+            edge = F.conv2d(blur, self.sobel)
+            edge = torch.sqrt(torch.sum(edge * edge, dim=1, keepdim=True))
 
-        blur = F.pad(blur, self._sobel_padding * 2, mode='replicate')
-        edge = F.conv2d(blur, self.sobel)
-        edge = torch.sqrt(torch.sum(edge * edge, dim=1, keepdim=True))
-        # print(blur.shape, mask.shape, edge.shape)
-        return mask, levelset, edge
+        return mask, levelset, edge, *others
 
-    # def _init_gauss(self, sigma, size):
-    #     coord = np.arange(size) - size // 2
-    #     grid = np.meshgrid(coord, coord, indexing='ij')
-    #     kernels = [np.exp(-(g**2) / (2 * sigma**2)) for g in grid]
-    #     kernel = np.prod(kernels, axis=0)
-    #     kernel = kernel / np.sum(kernel)
-    #     kernel = torch.tensor(kernel, dtype=torch.float32)[None, None, ...]
+
+class OutBlocks(torch.nn.ModuleDict):
+    def __init__(self, in_channels, output_attrs, num_hidden=0):
+        super().__init__()
+        self.in_channels = in_channels
+        self.output_attrs = output_attrs
+        self.num_hidden = num_hidden
+
+        for k, v in self.output_attrs.items()
+            self[k] = torch.nn.Sequential(
+                *[
+                    ConvBlock(in_channels, in_channels)
+                    for _ in range(self.num_hidden)
+                ],
+                OutBlock(in_channels, len(v))
+            )
+
+    def forward(self, x):
+        return {k: block[x] for k, block in self.items()}
 
 
 class UNet(_UNet):
     """The UNet.
 
     """
+    def __init__(self, in_channels, out_channels, num_trans_down,
+                 first_channels, output_attrs, num_out_hidden=0,
+                 max_channels=1024):
+        self.output_attrs = output_attrs
+        self.num_out_hidden = num_out_hidden
+        super().__init__(in_channels, out_channels, num_trans_down,
+                         first_channels, max_channels)
+
     def _create_ib(self, in_channels, out_channels, mid_channels):
         return ContractingBlock(in_channels, out_channels, mid_channels)
 
@@ -144,4 +167,4 @@ class UNet(_UNet):
         return ExpandingBlock(in_channels, shortcut_channels, out_channels)
 
     def _create_out(self, in_channels):
-        return OutBlock(in_channels)
+        return OutBlocks(in_channels, self.output_attrs, self.num_out_hidden)
