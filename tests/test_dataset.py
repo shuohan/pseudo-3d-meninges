@@ -1,4 +1,5 @@
 #!/usr/bin/env python 
+
 import nibabel as nib
 import numpy as np
 import matplotlib.pyplot as plt
@@ -27,8 +28,19 @@ def test_dataset():
                 [slice(None), slice(None)],
                 [slice(None), slice(None)],
             )
-        dataset = create_dataset(dirname, target_shape=target_shape,
-                                 stack_size=5)
+        dataset = create_dataset(
+            dirname,
+            target_shape=target_shape,
+            stack_size=5,
+            loading_order=[
+                'T1w',
+                'T2w',
+                'outer-mask',
+                'outer-sdf',
+                'inner-mask',
+                'inner-sdf'
+            ],
+        )
         for ax, ind, n, sind in zip(axes, indices, names, slices):
             t1w, t2w, omask, osdf, imask, isdf = dataset[ind]
             # print(t1w.data.shape, t2w.data.shape, omask.data.shape,
@@ -157,8 +169,18 @@ def test_dataset_no_t1w():
                 [slice(None), slice(None)],
                 [slice(None), slice(None)],
             )
-        dataset = create_dataset(dirname, target_shape=target_shape,
-                                 skip=['t1w'], stack_size=5)
+        dataset = create_dataset(
+            dirname,
+            target_shape=target_shape,
+            stack_size=5,
+            loading_order=[
+                'T2w',
+                'outer-mask',
+                'outer-sdf',
+                'inner-mask',
+                'inner-sdf'
+            ],
+        )
         for ax, ind, n, sind in zip(axes, indices, names, slices):
             t2w, omask, osdf, imask, isdf = dataset[ind]
 

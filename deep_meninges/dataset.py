@@ -5,6 +5,7 @@ import numpy as np
 from torch.utils.data import Dataset as Dataset_
 from pathlib import Path
 from cv2 import resize, INTER_CUBIC
+from collections import OrderedDict
 
 from ptxl.utils import NamedData
 
@@ -14,19 +15,27 @@ from .utils import padcrop
 random.seed(16784)
 
 
-def create_dataset(dirname, target_shape=(288, 288), transform=None, skip=[],
-                   shuffle_once=False, memmap=False, stack_size=1):
+def create_dataset(
+        dirname,
+        target_shape=(288, 288),
+        transform=None,
+        shuffle_once=False,
+        memmap=False,
+        stack_size=1,
+        loading_order=[],
+    ):
     GI = GroupImagesMemmap if memmap else GroupImages
-    images = GI(dirname, skip).group()
+    images = GI(dirname, loading_order).group()
     subjects = list()
     for subname, filenames in images.items():
         SD = SubjectDataMemmap if memmap else SubjectData
         subject = SD(
-            subname, filenames,
+            subname,
+            filenames,
             target_shape=target_shape,
             transform=transform,
             shuffle_once=shuffle_once,
-            stack_size=stack_size
+            stack_size=stack_size,
         )
         subjects.append(subject)
     dataset = Dataset(subjects)
@@ -34,26 +43,41 @@ def create_dataset(dirname, target_shape=(288, 288), transform=None, skip=[],
 
 
 class GroupImages:
-    def __init__(self, dirname, skip=[]):
+    def __init__(self, dirname, loading_order=[]):
         self.dirname = dirname
-        self.skip = skip
+        self.loading_order = loading_order
+        self._re_pattern = '(' + '|'.join(self.loading_order) + ')'
 
     def group(self):
-        images = dict()
+        images = OrderedDict()
         for image_fn in self._find_images():
             names = self._parse_name(image_fn)
             subname, im_type = names[:2]
             im_type = im_type.lower()
             if subname not in images:
-                images[subname] = dict()
-            if im_type not in self.skip:
-                if im_type not in images[subname]:
-                    images[subname][im_type] = list()
-                images[subname][im_type].append(image_fn)
+                images[subname] = OrderedDict()
+            if im_type not in images[subname]:
+                images[subname][im_type] = list()
+            images[subname][im_type].append(image_fn)
         return images
 
     def _find_images(self):
-        return sorted(Path(self.dirname).glob('*.nii*'))
+        def has_im_type(fn):
+            return re.search(self._re_pattern, str(fn))
+        filenames = Path(self.dirname).glob('*.nii*')
+        filenames = list(filter(has_im_type, filenames))
+        filenames = self._sort_images(filenames)
+        return filenames
+
+    def _sort_images(self, filenames):
+        keys = {k: v for v, k in enumerate(self.loading_order)}
+        def get_sort_key(fn):
+            return keys[re.search(self._re_pattern, str(fn)).group()]
+        filenames = sorted(filenames, key=get_sort_key)
+        def get_subj_name(fn):
+            return fn.name.split('_')[0]
+        filenames = sorted(filenames, key=get_subj_name)
+        return filenames
 
     def _parse_name(self, image_fn):
         return re.sub(r'\.nii(\.gz)*$', '', Path(image_fn).name).split('_')
@@ -96,34 +120,18 @@ class SubjectData:
             transform=None,
             shuffle_once=False,
             stack_size=1,
-            loading_order=[
-                ('t1w', 't2w', 'dura', 'arachnoid', 'outer', 'inner'),
-                ('mask', 'sdf', 'ct')
-        ]):
+        ):
         self.name = name
-        self.loading_order = loading_order
         self.target_shape = target_shape
         self.transform = transform
-        self.im_types = sorted(filenames.keys(), key=self._get_sort_keys)
+        self.im_types = list(filenames.keys())
         self.shuffle_once = shuffle_once
         self.stack_size = stack_size
-        self._check_im_types(filenames)
         self._create_images(filenames)
         self._check_im_shapes()
 
-    def _get_sort_keys(self, name):
-        counts = [len(order) for order in self.loading_order]
-        parts = name.split('-')
-        indices = [o.index(p) for p, o in zip(parts, self.loading_order)]
-        indices = indices + [0] * (len(self.loading_order) - len(parts))
-        index = np.ravel_multi_index(indices, counts) 
-        return index
-
-    def _check_im_types(self, filenames):
-        assert sorted(self.im_types) == sorted(list(filenames.keys()))
-
     def _create_images(self, filenames):
-        self._images = dict()
+        self._images = OrderedDict()
         for im_type, fns in filenames.items():
             self._images[im_type] = list()
             for fn in fns:
