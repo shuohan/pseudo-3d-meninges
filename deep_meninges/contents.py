@@ -18,35 +18,18 @@ class ContentsBuilder:
         self._init_value_attrs()
 
     def _init_tensor_attrs(self):
-        in_attrs = self.args.input_data_mode.split('_')
-        out_attrs = self._parse_out_data_mode()
-        self._tensor_attrs = in_attrs + out_attrs
+        attrs = deepcopy(self.args.parsed_in_data_mode)
+        for key, values in self.args.parsed_out_data_mode_dict.items():
+            attrs.extend(['-'.join([key, v]) for v in values])
+            attrs.extend(['-'.join([key, v]) + '_pred' for v in values])
+            attrs.append('-'.join([key, 'edge_pred']))
+        self._tensor_attrs = attrs
 
     def _init_value_attrs(self):
-        attrs = self._parse_out_data_mode()
-        self._value_attrs = list()
-        for k, v in attrs.items():
-            self._value_attrs.append('_'.join(['t', k, v]))
-
-    def _get_out_attrs(self):
-        attrs = self._parse_out_data_mode()
-        for attr_key, attr_val in attrs.items():
-            assert 'mask' in attr_val
-            assert 'sdf' in attr_val
-        for k in attrs.keys():
-            attrs[k].append('edge')
-            attrs[k].extend([v + '_pred' for v in attrs[k]])
-        return attrs
-
-    def _parse_out_data_mode(self):
-        attrs_tmp = self.args.output_data_mode.split('_')
-        attrs = dict()
-        for attr in attrs_tmp:
-            k, v = attr.split('-')
-            if k not in attrs:
-                attrs[k] = list()
-            attrs.append(v)
-        return attrs
+        self._value_attrs = [
+            '_'.join(['t', mode]) for mode in self.args.parsed_out_data_mode
+        ]
+        self._value_attrs.append('t_total_loss')
 
     @property
     def contents(self):
@@ -65,14 +48,7 @@ class ContentsBuilder:
         return counter
 
     def _create_contents(self, counter):
-        contents = self._contents_cls(
-            self.model,
-            self.optim,
-            counter,
-            self.args.input_data_mode,
-            self.args.output_data_mode
-        )
-        return contents
+        return self._contents_cls( self.model, self.optim, counter)
 
     def _set_observers(self):
         self._set_printer()
@@ -81,17 +57,12 @@ class ContentsBuilder:
         self._set_train_savers()
 
     def _set_printer(self):
-        attrs = self._value_attrs()
-        printer = MultiTqdmPrinter(attrs=attrs)
+        printer = MultiTqdmPrinter(attrs=self._value_attrs, decimals=2)
         self.contents.register(printer)
 
     def _set_logger(self):
-        attrs = self._value_attrs()
-        logger = Logger(self.args.loss_filename, attrs=attrs)
+        logger = Logger(self.args.loss_filename, attrs=self._value_attrs)
         self.contents.register(logger)
-
-    def _get_value_attrs(self):
-        return self.contents.get_value_attrs()
 
     def _set_checkpoint_saver(self):
         cp_saver = self._checkpont_saver_cls(
@@ -107,7 +78,7 @@ class ContentsBuilder:
         )
 
     def _set_im_savers(self, dirname, step, prefix):
-        save_png = create_save_image('png_norm', 'image')
+        save_png = create_save_image('png_norm', 'image', dict())
         attrs = ['_'.join([prefix, a]) for a in self._tensor_attrs]
         saver = ImageSaver(dirname, save_png, attrs=attrs, step=step)
         self.contents.register(saver)
@@ -129,19 +100,20 @@ class ContentsBuilderValid(ContentsBuilder):
             self.args.valid_save_step, 'v'
         )
 
+    def _init_value_attrs(self):
+        super()._init_value_attrs()
+        for k in self.args.parsed_out_data_mode:
+            self._value_attrs.append('_'.join(['v', k]))
+        self._value_attrs.append('v_total_loss')
+        self._value_attrs.append('min_v_loss')
+        self._value_attrs.append('min_v_epoch')
+
 
 class ContentsValid(Contents):
     def __init__(self, model, optim, counter):
         super().__init__(model, optim, counter)
         self.best_model_state = self.model.state_dict()
         self.best_optim_state = self.optim.state_dict()
-
-    def _init_value_attrs(self):
-        attrs = self._parse_out_data_mode()
-        self._value_attrs = list()
-        for k, v in attrs.items():
-            self._value_attrs.append('_'.join(['t', k, v]))
-            self._value_attrs.append('_'.join(['v', k, v]))
 
     def update_valid_loss(self, valid_loss):
         valid_loss = valid_loss

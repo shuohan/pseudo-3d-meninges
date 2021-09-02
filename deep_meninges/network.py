@@ -1,5 +1,6 @@
 import torch
 import torch.nn.functional as F
+from collections import OrderedDict
 
 from pytorch_unet.blocks import _ConvBlock, _ContractingBlock
 from pytorch_unet.blocks import _ExpandingBlock, _TransUpBlock
@@ -80,43 +81,44 @@ class TransUpBlock(_TransUpBlock):
 
 
 class OutBlock(torch.nn.Module):
-    def __init__(self, in_channels, out_channels, sigma=3, gauss_size=7):
+    def __init__(self, in_channels, output_attrs, sigma=3, gauss_size=7):
         super().__init__()
         self.in_channels = in_channels
-        self.out_channels = out_channels
+        self.output_attrs = output_attrs
         self._init_gauss(sigma, gauss_size)
         self._init_sobel()
-        self.convs = torch.nn.ModuleList([
-            torch.nn.Conv2d(self.in_channels, 1, 1)
-            for _ in range(self.out_channels)
-        ])
+        self.convs = torch.nn.ModuleDict({
+            attr: torch.nn.Conv2d(self.in_channels, 1, 1)
+            for attr in output_attrs
+        })
 
     def _init_gauss(self, sigma, size):
         kernel = get_gaussian_kernel2d((size, size), (sigma, sigma))
         kernel = normalize_kernel2d(kernel)[None, None]
         self.register_buffer('gauss', kernel)
-        self._gauss_padding = (size // 2, ) * 2
+        self._gauss_padding = (size // 2, ) * 4
 
     def _init_sobel(self):
         kernel = get_spatial_gradient_kernel2d('sobel', 1)
         kernel = normalize_kernel2d(kernel).unsqueeze(1)
         self.register_buffer('sobel', kernel)
-        self._sobel_padding = (1, 1)
+        self._sobel_padding = (1, 1) * 2
 
     def forward(self, x):
-        mask = self.convs[0](x)
-        mask = torch.sigmoid(mask)
-        levelset = self.convs[1](x)
-        others = [conv(x) for conv in self.convs[2:]]
+        results = OrderedDict()
+        for name in self.output_attrs:
+            results[name] = self.convs[name](x) 
+        results['mask'] = torch.sigmoid(results['mask'])
 
         with torch.no_grad():
-            mask_pad = F.pad(mask, self._gauss_padding * 2, mode='replicate')
+            mode = 'replicate'
+            mask_pad = F.pad(results['mask'], self._gauss_padding, mode=mode)
             blur = F.conv2d(mask_pad, self.gauss)
-            blur = F.pad(blur, self._sobel_padding * 2, mode='replicate')
+            blur = F.pad(blur, self._sobel_padding, mode=mode)
             edge = F.conv2d(blur, self.sobel)
             edge = torch.sqrt(torch.sum(edge * edge, dim=1, keepdim=True))
 
-        return mask, levelset, edge, *others
+        return *list(results.values()), edge
 
 
 class OutBlocks(torch.nn.ModuleDict):
@@ -132,7 +134,7 @@ class OutBlocks(torch.nn.ModuleDict):
                     ConvBlock(in_channels, in_channels)
                     for _ in range(self.num_hidden)
                 ],
-                OutBlock(in_channels, len(v))
+                OutBlock(in_channels, v)
             )
 
     def forward(self, x):

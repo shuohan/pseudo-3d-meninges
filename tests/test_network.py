@@ -21,6 +21,7 @@ class Network(torch.nn.Module):
         return out['outer'] + out['inner']
 
 net = Network()
+print(net)
 # print(net)
 # y = net(x)
 

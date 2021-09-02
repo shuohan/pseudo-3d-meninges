@@ -53,7 +53,6 @@ class GroupImages:
         for image_fn in self._find_images():
             names = self._parse_name(image_fn)
             subname, im_type = names[:2]
-            im_type = im_type.lower()
             if subname not in images:
                 images[subname] = OrderedDict()
             if im_type not in images[subname]:
