@@ -126,7 +126,7 @@ class OutBlocks(torch.nn.ModuleDict):
         self.output_attrs = output_attrs
         self.num_hidden = num_hidden
 
-        for k, v in self.output_attrs.items()
+        for k, v in self.output_attrs.items():
             self[k] = torch.nn.Sequential(
                 *[
                     ConvBlock(in_channels, in_channels)
@@ -136,19 +136,18 @@ class OutBlocks(torch.nn.ModuleDict):
             )
 
     def forward(self, x):
-        return {k: block[x] for k, block in self.items()}
+        return {k: block(x) for k, block in self.items()}
 
 
 class UNet(_UNet):
     """The UNet.
 
     """
-    def __init__(self, in_channels, out_channels, num_trans_down,
-                 first_channels, output_attrs, num_out_hidden=0,
-                 max_channels=1024):
+    def __init__(self, in_channels, output_attrs, num_trans_down,
+                 first_channels, num_out_hidden=0, max_channels=1024):
         self.output_attrs = output_attrs
         self.num_out_hidden = num_out_hidden
-        super().__init__(in_channels, out_channels, num_trans_down,
+        super().__init__(in_channels, 1, num_trans_down,
                          first_channels, max_channels)
 
     def _create_ib(self, in_channels, out_channels, mid_channels):

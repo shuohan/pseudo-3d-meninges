@@ -7,7 +7,22 @@ from deep_meninges.network import UNet
 
 
 x = torch.rand([2, 2, 32, 32]).float().cuda()
-net = UNet(2, 2, 3, 8).cuda()
-print(net)
+output_attrs = {
+    'outer': ['mask', 'sdf'],
+    'inner': ['mask', 'sdf'],
+}
+
+class Network(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.net = UNet(2, output_attrs, 3, 8, 1).cuda()
+    def forward(self, x):
+        out = self.net(x)
+        return out['outer'] + out['inner']
+
+net = Network()
+# print(net)
+# y = net(x)
+
 dot = make_dot(x, net)
 dot.render('network')
