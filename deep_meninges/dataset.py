@@ -15,13 +15,19 @@ random.seed(16784)
 
 
 def create_dataset(dirname, target_shape=(288, 288), transform=None, skip=[],
-                   shuffle_once=False, memmap=False):
+                   shuffle_once=False, memmap=False, stack_size=1):
     GI = GroupImagesMemmap if memmap else GroupImages
     images = GI(dirname, skip).group()
     subjects = list()
     for subname, filenames in images.items():
         SD = SubjectDataMemmap if memmap else SubjectData
-        subject = SD(subname, filenames, target_shape, transform, shuffle_once)
+        subject = SD(
+            subname, filenames,
+            target_shape=target_shape,
+            transform=transform,
+            shuffle_once=shuffle_once,
+            stack_size=stack_size
+        )
         subjects.append(subject)
     dataset = Dataset(subjects)
     return dataset
@@ -37,6 +43,7 @@ class GroupImages:
         for image_fn in self._find_images():
             names = self._parse_name(image_fn)
             subname, im_type = names[:2]
+            im_type = im_type.lower()
             if subname not in images:
                 images[subname] = dict()
             if im_type not in self.skip:
@@ -83,21 +90,34 @@ class Dataset(Dataset_):
 
 class SubjectData:
 
-    def __init__(self, name, filenames, target_shape=None, transform=None,
-                 shuffle_once=False):
+    def __init__(
+            self, name, filenames,
+            target_shape=None,
+            transform=None,
+            shuffle_once=False,
+            stack_size=1,
+            loading_order=[
+                ('t1w', 't2w', 'dura', 'arachnoid', 'outer', 'inner'),
+                ('mask', 'sdf', 'ct')
+        ]):
         self.name = name
+        self.loading_order = loading_order
         self.target_shape = target_shape
         self.transform = transform
         self.im_types = sorted(filenames.keys(), key=self._get_sort_keys)
         self.shuffle_once = shuffle_once
+        self.stack_size = stack_size
         self._check_im_types(filenames)
         self._create_images(filenames)
         self._check_im_shapes()
 
     def _get_sort_keys(self, name):
-        # use dict in case one of the contrast is missing
-        sort_keys = {'t1w': 0, 't2w': 1, 'ct': 2, 'mask': 3, 'sdf': 4}
-        return sort_keys[name]
+        counts = [len(order) for order in self.loading_order]
+        parts = name.split('-')
+        indices = [o.index(p) for p, o in zip(parts, self.loading_order)]
+        indices = indices + [0] * (len(self.loading_order) - len(parts))
+        index = np.ravel_multi_index(indices, counts) 
+        return index
 
     def _check_im_types(self, filenames):
         assert sorted(self.im_types) == sorted(list(filenames.keys()))
@@ -108,9 +128,12 @@ class SubjectData:
             self._images[im_type] = list()
             for fn in fns:
                 nifti = nib.load(fn)
-                # print('Load', self, im_type, fn)
                 contrast = self._get_contrast(fn)
-                im_slices = ImageSlicesDataobj(nifti, contrast, self.target_shape)
+                im_slices = ImageSlicesDataobj(
+                    nifti, contrast,
+                    stack_size=self.stack_size,
+                    target_shape=self.target_shape
+                )
                 self._images[im_type].append(im_slices)
             if self.shuffle_once:
                 random.shuffle(self._images[im_type])
@@ -124,7 +147,7 @@ class SubjectData:
     def _check_im_shapes(self):
         shapes = [im.shape for ims in self._images.values() for im in ims]
         assert len(set(shapes)) == 1
- 
+
     def __getitem__(self, index):
         data = [self._get_slices(imt, index) for imt in self.im_types]
         if self.transform:
@@ -141,7 +164,7 @@ class SubjectData:
         im_slice = image_slices[index]
         name = '_'.join([self.name, im_slice.name, im_type])
         # print('Selected', image_slices, name)
-        return NamedData(name=name, data=im_slice.data[None, ...])
+        return NamedData(name=name, data=im_slice.data)
 
     def __len__(self):
         key = list(self._images.keys())[0]
@@ -161,9 +184,12 @@ class SubjectDataMemmap(SubjectData):
                     dtype = f.readline()
                 shape = tuple(np.load(shape_fn).tolist())
                 fp = np.memmap(fn, dtype=dtype, mode='r', shape=shape)
-                # print('Load', self, im_type, fn)
                 contrast = self._get_contrast(fn)
-                im_slices = ImageSlicesMemmap(fp, contrast, self.target_shape)
+                im_slices = ImageSlicesMemmap(
+                    fp, contrast,
+                    stack_size=self.stack_size,
+                    target_shape=self.target_shape
+                )
                 self._images[im_type].append(im_slices)
             if self.shuffle_once:
                 random.shuffle(self._images[im_type])
@@ -176,15 +202,17 @@ class SubjectDataMemmap(SubjectData):
 
 
 class ImageSlices:
-    def __init__(self, nifti, name, target_shape=None):
+    def __init__(self, nifti, name, stack_size=1, target_shape=None):
         self.nifti = nifti
         self.name = name
         self.target_shape = target_shape
-        self._num_cumsum = np.cumsum(self.nifti.shape)
+        self.stack_size = stack_size
+        assert self.stack_size % 2 == 1
+        self._num_cumsum = np.cumsum(self.shape)
 
     @property
     def shape(self):
-        return self.nifti.shape
+        return tuple(s - self.stack_size + 1 for s in self.nifti.shape)
 
     def __getitem__(self, index):
         self._check_index(index)
@@ -201,6 +229,7 @@ class ImageSlices:
     def extract_slice(self, axis, index):
         indexing = self._calc_indexing(axis, index)
         image_slice = self._extract_slice(indexing)
+        image_slice = np.moveaxis(image_slice, axis, 0)
         if axis in [0, 1]: # top bottom swap
             image_slice = np.flip(image_slice, -1)
         if self.target_shape:
@@ -222,7 +251,7 @@ class ImageSlices:
 
     def _calc_indexing(self, axis, index):
         result = [slice(None)] * self.nifti.ndim
-        result[axis] = index
+        result[axis] = slice(index, index + self.stack_size)
         return tuple(result)
 
     def __len__(self):
@@ -272,7 +301,7 @@ class Scale:
             scales = self._sample_scales()
             for image in images:
                 assert image.data.ndim == 3
-                data = self._scale_image(image.data[0, ...], scales)[None, ...]
+                data = self._scale_images(image.data, scales)
                 name = self._get_name(image.name, scales)
                 results.append(NamedData(name=name, data=data))
         return results
@@ -297,6 +326,13 @@ class Scale:
         result = resize(data, target_shape, interpolation=INTER_CUBIC)
         result = self._padcrop(result, data.shape)
         return result
+
+    def _scale_images(self, data, scales):
+        results = list()
+        for image in data:
+            d = self._scale_image(image, scales)
+            results.append(d)
+        return np.stack(results, axis=0)
 
     def _padcrop(self, image, target_shape, pad_mode='edge'):
         diffs =[ss - ts for ss, ts in zip(image.shape, target_shape)]
