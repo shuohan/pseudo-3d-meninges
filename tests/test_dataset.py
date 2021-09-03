@@ -33,8 +33,8 @@ def test_dataset():
             target_shape=target_shape,
             stack_size=5,
             loading_order=[
-                'T1w',
-                'T2w',
+                't1w',
+                't2w',
                 'outer-mask',
                 'outer-sdf',
                 'inner-mask',
@@ -73,12 +73,12 @@ def test_dataset():
             assert imask.data.shape == shapes[ax]
             assert isdf.data.shape == shapes[ax]
 
-            t1w_fn = Path(dirname, n + '_T1w.nii.gz')
-            t2w_fn = Path(dirname, n + '_T2w.nii.gz')
-            omask_fn = Path(dirname, n + '_outer-mask.nii.gz')
-            osdf_fn = Path(dirname, n + '_outer-sdf.nii.gz')
-            imask_fn = Path(dirname, n + '_inner-mask.nii.gz')
-            isdf_fn = Path(dirname, n + '_inner-sdf.nii.gz')
+            t1w_fn = Path(dirname, n + '_t1w.nii')
+            t2w_fn = Path(dirname, n + '_t2w.nii')
+            omask_fn = Path(dirname, n + '_outer-mask.nii')
+            osdf_fn = Path(dirname, n + '_outer-sdf.nii')
+            imask_fn = Path(dirname, n + '_inner-mask.nii')
+            isdf_fn = Path(dirname, n + '_inner-sdf.nii')
 
             t1w_orig = nib.load(t1w_fn).get_fdata(dtype=np.float32)
             t2w_orig = nib.load(t2w_fn).get_fdata(dtype=np.float32)
@@ -174,7 +174,7 @@ def test_dataset_no_t1w():
             target_shape=target_shape,
             stack_size=5,
             loading_order=[
-                'T2w',
+                't2w',
                 'outer-mask',
                 'outer-sdf',
                 'inner-mask',
@@ -207,11 +207,11 @@ def test_dataset_no_t1w():
             assert imask.data.shape == shapes[ax]
             assert isdf.data.shape == shapes[ax]
 
-            t2w_fn = Path(dirname, n + '_T2w.nii.gz')
-            omask_fn = Path(dirname, n + '_outer-mask.nii.gz')
-            osdf_fn = Path(dirname, n + '_outer-sdf.nii.gz')
-            imask_fn = Path(dirname, n + '_inner-mask.nii.gz')
-            isdf_fn = Path(dirname, n + '_inner-sdf.nii.gz')
+            t2w_fn = Path(dirname, n + '_t2w.nii')
+            omask_fn = Path(dirname, n + '_outer-mask.nii')
+            osdf_fn = Path(dirname, n + '_outer-sdf.nii')
+            imask_fn = Path(dirname, n + '_inner-mask.nii')
+            isdf_fn = Path(dirname, n + '_inner-sdf.nii')
 
             t2w_orig = nib.load(t2w_fn).get_fdata(dtype=np.float32)
             omask_orig = nib.load(omask_fn).get_fdata(dtype=np.float32)

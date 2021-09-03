@@ -99,10 +99,13 @@ class Trainer:
     def _record_true_data(self, true_data, prefix='t'):
         for outname, attrs in self.args.parsed_out_data_mode_dict.items():
             for t, attr in zip(true_data[outname], attrs):
-                attr = '-'.join([outname, attr])
-                attr = '_'.join([prefix, attr])
-                data = t.data[:, self._slice_ind, ...]
-                self._contents.set_tensor_cpu(attr, data, t.name)
+                if len(data) == 0:
+                    self._contents.set_tensor_cpu(attr, None, '')
+                else:
+                    attr = '-'.join([outname, attr])
+                    attr = '_'.join([prefix, attr])
+                    data = t.data[:, self._slice_ind, ...]
+                    self._contents.set_tensor_cpu(attr, data, t.name)
 
     def _record_predictions(self, pred, prefix='t'):
         for outname, attrs in self.args.parsed_out_data_mode_dict.items():
@@ -131,6 +134,8 @@ class Trainer:
             if outname not in losses:
                 losses[outname] = list()
             for p, t, a in zip(pred_tmp, truth_tmp, attrs):
+                if len(t) == 0:
+                    continue
                 t_data = t.data[:, self._slice_ind : self._slice_ind + 1, ...]
                 loss = self._calc_loss(p, t_data.cuda(), a, pred_edge)
                 losses[outname].append(loss)

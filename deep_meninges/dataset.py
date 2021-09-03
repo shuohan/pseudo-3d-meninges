@@ -5,7 +5,7 @@ import numpy as np
 from torch.utils.data import Dataset as Dataset_
 from pathlib import Path
 from cv2 import resize, INTER_CUBIC
-from collections import OrderedDict
+from collections import OrderedDict, deque
 
 from ptxl.utils import NamedData
 
@@ -42,7 +42,47 @@ def create_dataset(
     return dataset
 
 
-class GroupImages:
+def create_dataset_multi(
+        dirname,
+        num_slices_per_epoch,
+        num_epochs,
+        target_shape=(288, 288),
+        transform=None,
+        shuffle_once=False,
+        memmap=False,
+        stack_size=1,
+        loading_order=[],
+    ):
+    group_images_cls = GroupImagesMemmap if memmap else GroupImages
+    group_images = GroupImagesMulti(dirname, loading_order, group_images_cls)
+    all_images = group_images.group()
+
+    datasets = list()
+    for images in all_images:
+        subjects = list()
+        for subname, filenames in images.items():
+            SD = SubjectDataMemmap if memmap else SubjectData
+            subject = SD(
+                subname,
+                filenames,
+                im_types=loading_order,
+                target_shape=target_shape,
+                transform=transform,
+                shuffle_once=shuffle_once,
+                stack_size=stack_size,
+            )
+            subjects.append(subject)
+        datasets.append(Dataset(subjects))
+    dataset = DatasetMulti(datasets, num_slices_per_epoch, num_epochs)
+    return dataset
+
+
+class GroupImages_:
+    def group(self):
+        raise NotImplementedError
+
+
+class GroupImages(GroupImages_):
     def __init__(self, dirname, loading_order=[]):
         self.dirname = dirname
         self.loading_order = loading_order
@@ -90,6 +130,23 @@ class GroupImagesMemmap(GroupImages):
         return re.sub(r'\.dat$', '', Path(image_fn).name).split('_')
 
 
+class GroupImagesMulti(GroupImages_):
+    def __init__(self, dirname, loading_order=[],
+                 group_images_cls=GroupImages):
+        self.dirname = dirname
+        self.loading_order = loading_order
+        self.group_images = [
+            group_images_cls(subdir, loading_order)
+            for subdir in sorted(Path(dirname).glob('*'))
+        ]
+
+    def group(self):
+        images = list()
+        for gi in self.group_images:
+            images.append(gi.group())
+        return images
+
+
 class Dataset(Dataset_):
     def __init__(self, subjects):
         self.subjects = subjects
@@ -110,11 +167,53 @@ class Dataset(Dataset_):
         slice_ind = index - offset
         return sub_ind, slice_ind
 
+    def update(self):
+        pass
+
+
+class DatasetMulti(Dataset_):
+    def __init__(self, datasets, num_slices_per_epoch, num_epochs):
+        self.datasets = datasets
+        self.num_slices_per_epoch = num_slices_per_epoch
+        self.num_epochs = num_epochs
+        self._num_datasets = len(self.datasets)
+        self._calc_num_slices_per_dataset()
+        self._sample_indices()
+        self._dataset_index = 0
+
+    def _calc_num_slices_per_dataset(self):
+        q, r = divmod(self.num_epochs, self._num_datasets)
+        self._num_slices_per_dataset \
+            = [(q + 1) * self.num_slices_per_epoch] * r \
+            + [q * self.num_slices_per_epoch] * (self._num_datasets - r)
+
+    def _sample_indices(self):
+        self._indices = list()
+        for i, num_slices in enumerate(self._num_slices_per_dataset):
+            total_num_slices = len(self.datasets[i])
+            indices = random.choices(range(total_num_slices), k=num_slices)
+            indices = deque(indices)
+            self._indices.append(indices)
+
+    def __len__(self):
+        return self.num_slices_per_epoch
+
+    def __getitem__(self, index):
+        dataset = self.datasets[self._dataset_index]
+        indices = self._indices[self._dataset_index]
+        index = indices.pop()
+        return dataset[index]
+
+    def update(self):
+        self._dataset_index = (self._dataset_index + 1) % self._num_datasets
+        # self._dataset_index = random.choice(range(len(self.subjects)))
+
 
 class SubjectData:
 
     def __init__(
             self, name, filenames,
+            im_types=None,
             target_shape=None,
             transform=None,
             shuffle_once=False,
@@ -123,7 +222,9 @@ class SubjectData:
         self.name = name
         self.target_shape = target_shape
         self.transform = transform
-        self.im_types = list(filenames.keys())
+        self.im_types = im_types
+        if self.im_types is None:
+            self.im_types = list(filenames.keys())
         self.shuffle_once = shuffle_once
         self.stack_size = stack_size
         self._create_images(filenames)
@@ -131,8 +232,10 @@ class SubjectData:
 
     def _create_images(self, filenames):
         self._images = OrderedDict()
-        for im_type, fns in filenames.items():
+        for im_type in self.im_types:
             self._images[im_type] = list()
+
+        for im_type, fns in filenames.items():
             for fn in fns:
                 nifti = nib.load(fn)
                 contrast = self._get_contrast(fn)
@@ -162,15 +265,15 @@ class SubjectData:
         return data
 
     def _get_slices(self, im_type, index):
+        if not self._images[im_type]:
+            return []
+
         if self.shuffle_once:
             image_slices = self._images[im_type][0]
-            # print('Valid', self.name, im_type, image_slices.name)
         else:
             image_slices = random.choice(self._images[im_type])
-
         im_slice = image_slices[index]
         name = '_'.join([self.name, im_slice.name, im_type])
-        # print('Selected', image_slices, name)
         return NamedData(name=name, data=im_slice.data)
 
     def __len__(self):
