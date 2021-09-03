@@ -11,11 +11,13 @@ parser.add_argument('-b', '--batch-size', type=int, default=8,
                     help='Training batch size.')
 parser.add_argument('-n', '--num-slices-per-epoch', type=int, default=2000,
                     help='Number of slices per epoch per dataset.')
+parser.add_argument('-N', '--num-valid-slices-per-epoch', type=int,
+                    default=2000, help='Number of slices per epoch per dataset.')
 parser.add_argument('-B', '--test-batch-size', type=int, default=1,
                     help='Testing batch size.')
 parser.add_argument('-w', '--num-workers', type=int, default=2,
                     help='Number of DataLoader multiprocessing workers.')
-parser.add_argument('-N', '--num-out-hidden', type=int, default=0,
+parser.add_argument('-H', '--num-out-hidden', type=int, default=0,
                     help='The number of hidden convs in the output block.')
 parser.add_argument('-f', '--num-channels', type=int, default=64,
                     help='The number of network features of the first block.')

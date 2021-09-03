@@ -286,7 +286,7 @@ class TrainerValid(Trainer):
         dataset = create_dataset_multi(
             self.args.valid_dir,
             self.args.batch_size,
-            self.args.num_slices_per_epoch,
+            self.args.num_valid_slices_per_epoch,
             self.args.num_epochs,
             target_shape=target_shape,
             memmap=self.args.memmap,
@@ -322,6 +322,7 @@ class TrainerValid(Trainer):
             self._contents.valid_contents.notify_observers()
 
         total_loss = torch.mean(torch.stack(total_loss_buffer, dim=0))
+        self._contents.update_valid_loss(total_loss)
 
         self._record_input_data(input_data, 'v')
         self._record_true_data(true_data, 'v')

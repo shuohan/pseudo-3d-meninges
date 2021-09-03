@@ -57,7 +57,8 @@ class ContentsBuilder:
         self._set_train_savers()
 
     def _set_printer(self):
-        printer = MultiTqdmPrinter(attrs=self._value_attrs, decimals=2)
+        printer = MultiTqdmPrinter(attrs=self._value_attrs, decimals=2,
+                                   num_desc_lines=2)
         self.contents.register(printer)
 
     def _set_logger(self):
@@ -97,6 +98,7 @@ class ContentsBuilderValid(ContentsBuilder):
         valid_contents = ContentsValidProg(valid_counter)
         self._contents.valid_contents = valid_contents
         self._set_observers()
+        self._contents.set_value('min_v_loss', float('inf'))
         return self
 
     def _set_observers(self):
@@ -111,8 +113,7 @@ class ContentsBuilderValid(ContentsBuilder):
         )
 
     def _set_valid_printer(self):
-        printer = TqdmPrinterNoDesc(
-            attrs=self._value_attrs, decimals=2, loc_offset=3)
+        printer = TqdmPrinterNoDesc(loc_offset=4)
         self.contents.valid_contents.register(printer)
 
     def _init_value_attrs(self):
@@ -132,7 +133,6 @@ class ContentsValid(Contents):
         self.valid_contents = None
 
     def update_valid_loss(self, valid_loss):
-        valid_loss = valid_loss
         self.set_value('v_total_loss', valid_loss)
         if valid_loss < self.get_value('min_v_loss'):
             self.set_value('min_v_loss', valid_loss)

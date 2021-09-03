@@ -9,4 +9,4 @@ output=results_train_valid
 ../scripts/train.py -t $data -v $data_valid -o $output \
     -w 0 -D 3 -f 2 -s 1 -V 1 -C 2 -e 2 \
     -O outer-mask_outer-sdf_inner-mask_inner-sdf \
-    -n 16
+    -n 16 -N 32
