@@ -85,8 +85,8 @@ class ContentsBuilder:
 
 
 class ContentsBuilderValid(ContentsBuilder):
-    def _set_observers(self):
-        super()._set_observers()
+    def __init__(self, model, optim, args):
+        super().__init__(model, optim, args)
         self._contents_cls = ContentsValid
         self._checkpont_saver_cls = CheckpointSaverValid
 

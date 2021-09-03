@@ -32,6 +32,7 @@ def create_dataset(
         subject = SD(
             subname,
             filenames,
+            im_types=loading_order,
             target_shape=target_shape,
             transform=transform,
             shuffle_once=shuffle_once,

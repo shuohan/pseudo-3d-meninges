@@ -8,7 +8,8 @@ from pathlib import Path
 from collections import OrderedDict
 
 from .network import UNet
-from .dataset import create_dataset_multi, FlipLR, Compose, Scale
+from .dataset import create_dataset_multi, create_dataset
+from .dataset import FlipLR, Compose, Scale
 from .contents import ContentsBuilder, ContentsBuilderValid
 
 
@@ -46,21 +47,28 @@ class Trainer:
             self._optim.zero_grad()
 
             input_data, true_data = self._split_data(data)
-            pred, losses, total_loss = self._train_batch(input_data, true_data)
+            pred = self._apply_network(input_data)
+            losses = self._calc_total_loss(pred, true_data)
+            total_loss = self._sum_losses(losses)
+            total_loss.backward()
+            self._optim.step()
 
             self._record_input_data(input_data, 't')
             self._record_true_data(true_data, 't')
             self._record_predictions(pred, 't')
             self._record_losses(losses, total_loss, 't')
+
+            if self._needs_to_valid():
+                with torch.no_grad():
+                    self._valid_epoch()
+
             self._contents.notify_observers()
 
-    def _train_batch(self, input_data, true_data):
-        pred = self._apply_network(input_data)
-        losses = self._calc_total_loss(pred, true_data)
-        total_loss = self._sum_losses(losses)
-        total_loss.backward()
-        self._optim.step()
-        return pred, losses, total_loss
+    def _needs_to_valid(self):
+        return False
+
+    def _valid_epoch(self):
+        raise NotImplementedError
 
     def _split_data(self, data):
         num_input_data = len(self.args.parsed_in_data_mode)
@@ -70,7 +78,6 @@ class Trainer:
         true_data = OrderedDict()
         for outname, attrs in self.args.parsed_out_data_mode_dict.items():
             stop_ind = start_ind + len(attrs)
-            # print('split data', start_ind, stop_ind, len(data))
             true_data[outname] = data[start_ind : stop_ind]
             start_ind = stop_ind
 
@@ -114,7 +121,6 @@ class Trainer:
                 attr = '-'.join([outname, attr])
                 attr = '_'.join([prefix, attr, 'pred'])
                 with torch.no_grad():
-                    # print(attr, p.shape)
                     self._contents.set_tensor_cuda(attr, p.cpu(), '')
 
     def _record_losses(self, losses, total_loss, prefix='t'):
@@ -275,34 +281,16 @@ class TrainerValid(Trainer):
             target_shape,
             shuffle_once=True,
             memmap=self.args.memmap,
+            stack_size=self.args.stack_size,
             loading_order=self._define_loading_order(),
         )
         self._valid_loader = DataLoader(
             dataset,
             batch_size=self.args.batch_size,
             num_workers=self.args.num_workers,
-            shuffle=True
+            drop_last=True,
+            shuffle=True,
         )
-
-    def _train_epoch(self):
-        for j, data in enumerate(self._train_loader):
-            self._contents.counter['batch'].index0 = j
-
-            self._model.train()
-            self._optim.zero_grad()
-
-            if self.args.output_data_mode == 'ct_mask':
-                self._train_batch_both(data[:-2], data[-2], data[-1])
-            elif self.args.output_data_mode == 'ct':
-                self._train_batch_ct_only(data[:-1], data[-1])
-            elif self.args.output_data_mode == 'mask':
-                self._train_batch_mask_only(data[:-2], data[-2], data[-1])
-
-            if self._needs_to_valid():
-                self._model.eval()
-                self._valid_epoch()
-
-            self._contents.notify_observers()
 
     def _needs_to_valid(self):
         epoch_ind = self._contents.counter['epoch'].index1
@@ -311,88 +299,21 @@ class TrainerValid(Trainer):
         rule2 = self._contents.counter['batch'].has_reached_end()
         return rule1 and rule2
 
-    def _apply_network_valid(self, input_data):
-        pred = self._apply_network(input_data, 'v')
-        if 't1w' in self.args.input_data_mode:
-            self._contents.set_tensor_cpu('v_t1w', self._t1w.data, self._t1w.name)
-        if 't2w' in self.args.input_data_mode:
-            self._contents.set_tensor_cpu('v_t2w', self._t2w.data, self._t2w.name)
-        return pred
-
     def _valid_epoch(self):
-        if self.args.output_data_mode == 'ct_mask':
-            self._valid_epoch_both()
-        elif self.args.output_data_mode == 'ct':
-            self._valid_epoch_ct_only()
-        elif self.args.output_data_mode == 'mask':
-            self._valid_epoch_mask_only()
-
-    def _valid_epoch_both(self):
-        ct_losses = list()
-        mask_losses = list()
-        losses = list()
+        self._model.eval()
+        total_loss_buffer = list()
         for j, data in enumerate(self._valid_loader):
-            with torch.no_grad():
-                ct = data[-2]
-                mask = data[-1]
-                input_data = data[:-2]
-                pred = self._apply_network_valid(input_data)
+            # TODO: add valid counter
+            input_data, true_data = self._split_data(data)
+            pred = self._apply_network(input_data)
+            losses = self._calc_total_loss(pred, true_data)
+            total_loss = self._sum_losses(losses)
+            total_loss_buffer.append(total_loss)
 
-                ct_pred = pred[:, 0:1, ...]
-                mask_pred = pred[:, 1:2, ...]
+        total_loss = torch.mean(torch.stack(total_loss_buffer, dim=0))
 
-            closs, mloss, loss = self._calc_losses(ct_pred, mask_pred, ct, mask)
-            ct_losses.append(closs.item())
-            mask_losses.append(mloss.item())
-            losses.append(loss.item())
-
-        self._contents.set_tensor_cpu('v_ct', ct.data, ct.name)
-        self._contents.set_tensor_cpu('v_mask', mask.data, mask.name)
-        self._contents.set_tensor_cuda('v_ct_pred', ct_pred, ct.name)
-        self._contents.set_tensor_cuda('v_mask_pred', mask_pred, mask.name)
-
-        self._contents.set_value('v_ct_loss', np.mean(ct_losses))
-        self._contents.set_value('v_mask_loss', np.mean(mask_losses))
-        self._contents.update_valid_loss(np.mean(losses))
-
-    def _valid_epoch_mask_only(self):
-        mask_losses = list()
-        ls_losses = list()
-        losses = list()
-        for j, data in enumerate(self._valid_loader):
-            with torch.no_grad():
-                mask = data[-2]
-                ls = data[-1]
-                input_data = data[:-2]
-                mask_pred, ls_pred, edge = self._apply_network_valid(input_data)
-                mask_loss, ls_loss, loss = self._calc_mask_losses(
-                    mask_pred, ls_pred, edge, mask.data.cuda(), ls.data.cuda())
-            losses.append(loss.item())
-            mask_losses.append(mask_loss.item())
-            ls_losses.append(ls_loss.item())
-
-        self._contents.set_value('v_mask_loss', np.mean(mask_losses))
-        self._contents.set_value('v_ls_loss', np.mean(ls_losses))
-        self._contents.set_value('v_total_loss', np.mean(losses))
-
-        self._contents.set_tensor_cpu('v_mask', mask.data, mask.name)
-        self._contents.set_tensor_cuda('v_mask_pred', mask_pred, mask.name)
-        self._contents.set_tensor_cpu('v_ls', ls.data, ls.name)
-        self._contents.set_tensor_cuda('v_ls_pred', ls_pred, ls.name)
-        self._contents.set_tensor_cuda('v_edge', edge, mask.name)
-
-        self._contents.update_valid_loss(np.mean(losses))
-
-    def _valid_epoch_ct_only(self):
-        ct_losses = list()
-        for j, data in enumerate(self._valid_loader):
-            with torch.no_grad():
-                ct = data[-1]
-                input_data = data[:-1]
-                ct_pred = self._apply_network_valid(input_data)
-                loss = self._ct_loss_func(ct_pred, ct.data.cuda())
-            ct_losses.append(loss.item())
-        self._contents.set_tensor_cpu('v_ct', ct.data, ct.name)
-        self._contents.set_tensor_cuda('v_ct_pred', ct_pred, ct.name)
-        self._contents.set_value('v_ct_loss', np.mean(ct_losses))
-        self._contents.update_valid_loss(np.mean(ct_losses))
+        self._record_input_data(input_data, 'v')
+        self._record_true_data(true_data, 'v')
+        self._record_predictions(pred, 'v')
+        self._record_losses(losses, total_loss, 'v')
+        self._contents.update_valid_loss(total_loss)
