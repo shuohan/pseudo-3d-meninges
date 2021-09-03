@@ -268,11 +268,18 @@ class Trainer:
 class TrainerValid(Trainer):
     def __init__(self, args):
         super().__init__(args)
-        self._create_valid_loader()
 
     def _create_contents(self):
         builder = ContentsBuilderValid(self._model, self._optim, self.args)
         self._contents = builder.build().contents
+
+    def _create_train_loader(self):
+        super()._create_train_loader()
+        self._create_valid_loader()
+
+    def _add_more_args(self):
+        super()._add_more_args()
+        self.args.num_valid_batches = len(self._valid_loader)
 
     def _create_valid_loader(self):
         target_shape = self.args.target_shape
@@ -305,13 +312,14 @@ class TrainerValid(Trainer):
     def _valid_epoch(self):
         self._model.eval()
         total_loss_buffer = list()
-        for j, data in enumerate(self._valid_loader):
-            # TODO: add valid counter
+        for k, data in enumerate(self._valid_loader):
+            self._contents.valid_contents.counter.index0 = k
             input_data, true_data = self._split_data(data)
             pred = self._apply_network(input_data)
             losses = self._calc_total_loss(pred, true_data)
             total_loss = self._sum_losses(losses)
             total_loss_buffer.append(total_loss)
+            self._contents.valid_contents.notify_observers()
 
         total_loss = torch.mean(torch.stack(total_loss_buffer, dim=0))
 

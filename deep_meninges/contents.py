@@ -1,7 +1,7 @@
 from copy import deepcopy
-from ptxl.abstract import Contents
+from ptxl.abstract import Contents, _Contents
 from ptxl.utils import Counter, Counters
-from ptxl.log import Logger, MultiTqdmPrinter
+from ptxl.log import Logger, MultiTqdmPrinter, TqdmPrinterNoDesc
 from ptxl.save import ImageSaver as _ImageSaver
 from ptxl.save import create_save_image
 from ptxl.save import CheckpointSaver
@@ -90,15 +90,30 @@ class ContentsBuilderValid(ContentsBuilder):
         self._contents_cls = ContentsValid
         self._checkpont_saver_cls = CheckpointSaverValid
 
+    def build(self):
+        counter = self._create_counter()
+        self._contents = self._create_contents(counter)
+        valid_counter = Counter('valid', self.args.num_valid_batches)
+        valid_contents = ContentsValidProg(valid_counter)
+        self._contents.valid_contents = valid_contents
+        self._set_observers()
+        return self
+
     def _set_observers(self):
         super()._set_observers()
         self._set_valid_savers()
+        self._set_valid_printer()
 
     def _set_valid_savers(self):
         self._set_im_savers(
             self.args.valid_image_dir,
             self.args.valid_save_step, 'v'
         )
+
+    def _set_valid_printer(self):
+        printer = TqdmPrinterNoDesc(
+            attrs=self._value_attrs, decimals=2, loc_offset=3)
+        self.contents.valid_contents.register(printer)
 
     def _init_value_attrs(self):
         super()._init_value_attrs()
@@ -114,6 +129,7 @@ class ContentsValid(Contents):
         super().__init__(model, optim, counter)
         self.best_model_state = self.model.state_dict()
         self.best_optim_state = self.optim.state_dict()
+        self.valid_contents = None
 
     def update_valid_loss(self, valid_loss):
         valid_loss = valid_loss
@@ -135,6 +151,20 @@ class ContentsValid(Contents):
         super().load_state_dicts(checkpoint)
         self.best_model_state = checkpoint['model_state_dict']
         self.best_optim_state = checkpoint['optim_state_dict']
+
+    def start_observers(self):
+        super().start_observers()
+        self.valid_contents.start_observers()
+
+    def close_observers(self):
+        super().close_observers()
+        self.valid_contents.close_observers()
+
+
+class ContentsValidProg(_Contents):
+    def __init__(self, counter):
+        super().__init__()
+        self.counter = counter
 
 
 class CheckpointSaverValid(CheckpointSaver):
