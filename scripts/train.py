@@ -52,6 +52,8 @@ parser.add_argument(
 )
 args = parser.parse_args()
 
+import warnings
+warnings.filterwarnings("ignore")
 
 from deep_meninges.train import Trainer, TrainerValid
 
