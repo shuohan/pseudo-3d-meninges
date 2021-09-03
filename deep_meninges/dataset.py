@@ -54,6 +54,7 @@ def create_dataset_multi(
         memmap=False,
         stack_size=1,
         loading_order=[],
+        random_indices=True,
     ):
     group_images_cls = GroupImagesMemmap if memmap else GroupImages
     group_images = GroupImagesMulti(dirname, loading_order, group_images_cls)
@@ -75,7 +76,13 @@ def create_dataset_multi(
             )
             subjects.append(subject)
         datasets.append(Dataset(subjects))
-    ds = DatasetMulti(datasets, batch_size, num_slices_per_epoch, num_epochs)
+    ds = DatasetMulti(
+        datasets,
+        batch_size,
+        num_slices_per_epoch,
+        num_epochs,
+        random_indices=random_indices,
+    )
     return ds
 
 
@@ -174,14 +181,21 @@ class Dataset(Dataset_):
 
 
 class DatasetMulti(Dataset_):
-    def __init__(self, datasets, batch_size, num_slices_per_epoch, num_epochs):
+    def __init__(self, datasets, batch_size, num_slices_per_epoch, num_epochs,
+                 random_indices=True):
         self.datasets = datasets
         self.batch_size = batch_size
         self.num_slices_per_epoch = num_slices_per_epoch
         self.num_epochs = num_epochs
+        self.random_indices = random_indices
         self._num_datasets = len(self.datasets)
         self._calc_num_slices_per_dataset()
-        self._sample_indices()
+
+        if self.random_indices:
+            self._sample_indices()
+        else:
+            self._get_consecutive_indices()
+
         self._dataset_order = np.arange(self._num_datasets)
 
     def _calc_num_slices_per_dataset(self):
@@ -195,6 +209,16 @@ class DatasetMulti(Dataset_):
                 range(len(ds)),
                 k=self._num_slices_per_dataset
             )
+            indices = deque(indices)
+            self._indices.append(indices)
+
+    def _get_consecutive_indices(self):
+        self._indices = list()
+        for i, ds in enumerate(self.datasets):
+            indices = np.linspace(0, len(ds), self.num_slices_per_epoch + 2)
+            indices = np.round(indices[1:-1]).astype(int).tolist()
+            indices = indices * self.num_epochs
+            random.shuffle(indices)
             indices = deque(indices)
             self._indices.append(indices)
 

@@ -276,20 +276,23 @@ class TrainerValid(Trainer):
 
     def _create_valid_loader(self):
         target_shape = self.args.target_shape
-        dataset = create_dataset(
+        dataset = create_dataset_multi(
             self.args.valid_dir,
-            target_shape,
-            shuffle_once=True,
+            self.args.batch_size,
+            self.args.num_slices_per_epoch,
+            self.args.num_epochs,
+            target_shape=target_shape,
             memmap=self.args.memmap,
             stack_size=self.args.stack_size,
             loading_order=self._define_loading_order(),
+            random_indices=False
         )
         self._valid_loader = DataLoader(
             dataset,
             batch_size=self.args.batch_size,
             num_workers=self.args.num_workers,
-            drop_last=True,
-            shuffle=True,
+            drop_last=False,
+            shuffle=False,
         )
 
     def _needs_to_valid(self):
