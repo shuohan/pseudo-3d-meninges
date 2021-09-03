@@ -44,6 +44,7 @@ def create_dataset(
 
 def create_dataset_multi(
         dirname,
+        batch_size,
         num_slices_per_epoch,
         num_epochs,
         target_shape=(288, 288),
@@ -73,8 +74,8 @@ def create_dataset_multi(
             )
             subjects.append(subject)
         datasets.append(Dataset(subjects))
-    dataset = DatasetMulti(datasets, num_slices_per_epoch, num_epochs)
-    return dataset
+    ds = DatasetMulti(datasets, batch_size, num_slices_per_epoch, num_epochs)
+    return ds
 
 
 class GroupImages_:
@@ -172,41 +173,49 @@ class Dataset(Dataset_):
 
 
 class DatasetMulti(Dataset_):
-    def __init__(self, datasets, num_slices_per_epoch, num_epochs):
+    def __init__(self, datasets, batch_size, num_slices_per_epoch, num_epochs):
         self.datasets = datasets
+        self.batch_size = batch_size
         self.num_slices_per_epoch = num_slices_per_epoch
         self.num_epochs = num_epochs
         self._num_datasets = len(self.datasets)
         self._calc_num_slices_per_dataset()
         self._sample_indices()
-        self._dataset_index = 0
+        self._dataset_order = np.arange(self._num_datasets)
 
     def _calc_num_slices_per_dataset(self):
-        q, r = divmod(self.num_epochs, self._num_datasets)
         self._num_slices_per_dataset \
-            = [(q + 1) * self.num_slices_per_epoch] * r \
-            + [q * self.num_slices_per_epoch] * (self._num_datasets - r)
+            = self.num_slices_per_epoch * self.num_epochs
 
     def _sample_indices(self):
         self._indices = list()
-        for i, num_slices in enumerate(self._num_slices_per_dataset):
-            total_num_slices = len(self.datasets[i])
-            indices = random.choices(range(total_num_slices), k=num_slices)
+        for i, ds in enumerate(self.datasets):
+            indices = random.choices(
+                range(len(ds)),
+                k=self._num_slices_per_dataset
+            )
             indices = deque(indices)
             self._indices.append(indices)
 
     def __len__(self):
-        return self.num_slices_per_epoch
+        return self.num_slices_per_epoch * self._num_datasets
 
     def __getitem__(self, index):
-        dataset = self.datasets[self._dataset_index]
-        indices = self._indices[self._dataset_index]
+        ds_ind = self._split_index(index)
+        dataset = self.datasets[ds_ind]
+        indices = self._indices[ds_ind]
         index = indices.pop()
         return dataset[index]
 
+    def _split_index(self, index):
+        num_batches_per_ds = self.num_slices_per_epoch // self.batch_size
+        shape = (num_batches_per_ds, self._num_datasets, self.batch_size)
+        batch_ind, ds_ind, sample_ind = np.unravel_index(index, shape)
+        ds_ind = self._dataset_order[ds_ind]
+        return ds_ind
+
     def update(self):
-        self._dataset_index = (self._dataset_index + 1) % self._num_datasets
-        # self._dataset_index = random.choice(range(len(self.subjects)))
+        self._dataset_order = np.roll(self._dataset_order, 1)
 
 
 class SubjectData:
@@ -391,10 +400,13 @@ class FlipLR:
         if need_to_flip:
             results = list()
             for image in images:
-                assert image.data.ndim == 3
-                data = np.flip(image.data, axis=1).copy()
-                name = '_'.join([image.name, 'flip'])
-                results.append(NamedData(name=name, data=data))
+                if len(image) == 0:
+                    results.append(image)
+                else:
+                    assert image.data.ndim == 3
+                    data = np.flip(image.data, axis=1).copy()
+                    name = '_'.join([image.name, 'flip'])
+                    results.append(NamedData(name=name, data=data))
         return results
 
 
@@ -410,10 +422,13 @@ class Scale:
             results = list()
             scales = self._sample_scales()
             for image in images:
-                assert image.data.ndim == 3
-                data = self._scale_images(image.data, scales)
-                name = self._get_name(image.name, scales)
-                results.append(NamedData(name=name, data=data))
+                if len(image) == 0:
+                    results.append(image)
+                else:
+                    assert image.data.ndim == 3
+                    data = self._scale_images(image.data, scales)
+                    name = self._get_name(image.name, scales)
+                    results.append(NamedData(name=name, data=data))
         return results
 
     def _sample_scales(self):

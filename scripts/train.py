@@ -9,6 +9,8 @@ parser.add_argument('-v', '--valid-dir', default='',
 parser.add_argument('-o', '--output-dir', help='Directory of output results.')
 parser.add_argument('-b', '--batch-size', type=int, default=8,
                     help='Training batch size.')
+parser.add_argument('-n', '--num-slices-per-epoch', type=int, default=2000,
+                    help='Number of slices per epoch per dataset.')
 parser.add_argument('-B', '--test-batch-size', type=int, default=1,
                     help='Testing batch size.')
 parser.add_argument('-w', '--num-workers', type=int, default=2,

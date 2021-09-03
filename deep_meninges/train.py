@@ -8,7 +8,7 @@ from pathlib import Path
 from collections import OrderedDict
 
 from .network import UNet
-from .dataset import create_dataset, FlipLR, Compose, Scale
+from .dataset import create_dataset_multi, FlipLR, Compose, Scale
 from .contents import ContentsBuilder, ContentsBuilderValid
 
 
@@ -36,6 +36,7 @@ class Trainer:
         self._contents.start_observers()
         for i in self._contents.counter['epoch']:
             self._train_epoch()
+            self._train_loader.dataset.update()
         self._contents.close_observers()
 
     def _train_epoch(self):
@@ -99,11 +100,11 @@ class Trainer:
     def _record_true_data(self, true_data, prefix='t'):
         for outname, attrs in self.args.parsed_out_data_mode_dict.items():
             for t, attr in zip(true_data[outname], attrs):
-                if len(data) == 0:
+                attr = '-'.join([outname, attr])
+                attr = '_'.join([prefix, attr])
+                if len(t) == 0:
                     self._contents.set_tensor_cpu(attr, None, '')
                 else:
-                    attr = '-'.join([outname, attr])
-                    attr = '_'.join([prefix, attr])
                     data = t.data[:, self._slice_ind, ...]
                     self._contents.set_tensor_cpu(attr, data, t.name)
 
@@ -121,7 +122,11 @@ class Trainer:
             for loss, attr in zip(losses[outname], attrs):
                 attr = '-'.join([outname, attr])
                 attr = '_'.join([prefix, attr])
-                self._contents.set_value(attr, loss.item())
+                if isinstance(loss, torch.Tensor):
+                    loss_val = loss.item()
+                elif loss == 0:
+                    loss_val = float('nan')
+                self._contents.set_value(attr, loss_val)
         attr = '_'.join([prefix, 'total_loss'])
         self._contents.set_value(attr, total_loss.item())
 
@@ -135,9 +140,10 @@ class Trainer:
                 losses[outname] = list()
             for p, t, a in zip(pred_tmp, truth_tmp, attrs):
                 if len(t) == 0:
-                    continue
-                t_data = t.data[:, self._slice_ind : self._slice_ind + 1, ...]
-                loss = self._calc_loss(p, t_data.cuda(), a, pred_edge)
+                    loss = 0
+                else:
+                    t_data = t.data[:, self._slice_ind : self._slice_ind+1, ...]
+                    loss = self._calc_loss(p, t_data.cuda(), a, pred_edge)
                 losses[outname].append(loss)
         return losses
 
@@ -233,8 +239,11 @@ class Trainer:
     def _create_train_loader(self):
         target_shape = self.args.target_shape
         transform = Compose([FlipLR(), Scale(self.args.scale_aug)])
-        dataset = create_dataset(
+        dataset = create_dataset_multi(
             self.args.train_dir,
+            self.args.batch_size,
+            self.args.num_slices_per_epoch,
+            self.args.num_epochs,
             target_shape=target_shape,
             transform=transform,
             memmap=self.args.memmap,
@@ -244,9 +253,9 @@ class Trainer:
         self._train_loader = DataLoader(
             dataset,
             batch_size=self.args.batch_size,
-            drop_last=True,
+            drop_last=False,
             num_workers=self.args.num_workers,
-            shuffle=True
+            shuffle=False # handled by dataset
         )
 
 
