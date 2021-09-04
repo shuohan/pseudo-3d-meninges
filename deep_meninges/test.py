@@ -1,9 +1,12 @@
+import os
+import sys
 import torch
 import re
 import json
 import numpy as np
 import nibabel as nib
 import threading
+import contextlib
 from pathlib import Path
 from scipy.ndimage.measurements import label as find_cc
 from copy import deepcopy
@@ -21,10 +24,20 @@ from .utils import padcrop
 EPS = 1e-16
 
 
+class HidePrint:
+    def __enter__(self):
+        self._stdout = sys.stdout
+        sys.stdout = open(os.devnull, 'w')
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        sys.stdout.close()
+        sys.stdout = self._stdout
+
+
 class ImageThread(threading.Thread):
-    def __init__(self, queue):
+    def __init__(self, queue, desc_bar):
         super().__init__()
         self.queue = queue
+        self.desc_bar = desc_bar
     def run(self):
         while True:
             data = self.queue.get()
@@ -32,8 +45,9 @@ class ImageThread(threading.Thread):
             if data is None:
                 break
             filename, nifti = data
-            print(threading.current_thread().ident, 'save', filename)
+            self.desc_bar.set_description(f'saved {filename}')
             nifti.to_filename(filename)
+            self.desc_bar.refresh()
 
 
 class Tester:
@@ -48,7 +62,8 @@ class Tester:
 
     def _start_thread(self):
         self._queue = Queue()
-        self._image_thread = ImageThread(self._queue)
+        self._desc_bar = tqdm(bar_format='{desc}', position=1)
+        self._image_thread = ImageThread(self._queue, self._desc_bar)
         self._image_thread.start()
 
     def _close_thread(self):
@@ -119,6 +134,8 @@ class Tester:
 
     def _post_process(self, pred):
         comb_pred = self._comb_pred(pred)
+        self._desc_bar.set_description('topology correction')
+        self._desc_bar.refresh()
         tpc = self._correct_masks_topology(comb_pred)
         self._fuse_mask_sdfs(tpc, comb_pred)
 
@@ -150,7 +167,8 @@ class Tester:
             self._save_image(outer_mask, imname)
         stacked_mask = np.sum(prod_masks, axis=0)
         fn = self._save_image(stacked_mask, 'stacked-mask', queue=False)
-        tpc = topology_correction(fn, 'probability_map')['corrected']
+        with contextlib.redirect_stdout(None):
+            tpc = topology_correction(fn, 'probability_map')['corrected']
         self._save_image(tpc, 'stacked-mask_tpc', True)
         return tpc
 
@@ -190,7 +208,9 @@ class Tester:
         if queue:
             self._queue.put((filename, out_obj))
         else:
+            self._desc_bar.set_description(f'saved {filename}')
             out_obj.to_filename(filename)
+            self._desc_bar.refresh()
         return str(filename)
 
 
