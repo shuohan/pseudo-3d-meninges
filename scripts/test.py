@@ -8,6 +8,7 @@ parser.add_argument(
     help=('Input images in the order of the input data mode in training '
           'configurations.')
 )
+parser.add_argument('-d', '--dirname', help='Input directory.')
 parser.add_argument('-o', '--output-dir', help='Output directory.')
 parser.add_argument('-c', '--checkpoint', help='Checkpoint of model parameters.')
 parser.add_argument('-a', '--train-config', help='Configurations from training.')
@@ -22,7 +23,10 @@ parser.add_argument('-M', '--max-sdf-value', default=4, type=float)
 parser.add_argument('-w', '--num-workers', default=0, type=int)
 args = parser.parse_args()
 
-from deep_meninges.test import Tester
+from deep_meninges.test import Tester, TesterDataset
 
 
-Tester(args).test()
+if args.dirname is not None:
+    TesterDataset(args).test()
+else:
+    Tester(args).test()

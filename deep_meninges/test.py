@@ -14,7 +14,7 @@ from nighres.shape import topology_correction
 from queue import Queue
 
 from .network import UNet
-from .dataset import SubjectData
+from .dataset import SubjectData, GroupImages
 from .utils import padcrop
 
 
@@ -42,7 +42,7 @@ class Tester:
         self._parse_args()
         self._get_device()
         self._load_model()
-        self._create_tester()
+        self._create_testers()
         self._create_combine_images()
         self._start_thread()
 
@@ -83,10 +83,15 @@ class Tester:
             filenames[im_type] = [self.args.images[i]]
         return filenames
 
-    def _create_tester(self):
+    def _create_testers(self):
+        filenames = self._get_filenames()
+        self._tester = self._create_tester(filenames)
+
+    def _create_tester(self, filenames):
+        im_type_key = list(filenames.keys())[0]
         subj_data = SubjectData(
-            'test',
-            self._get_filenames(),
+            str(filenames[im_type_key][0]),
+            filenames,
             target_shape=self.args.target_shape,
             stack_size=self._config['stack_size']
         )
@@ -96,8 +101,9 @@ class Tester:
             num_workers=self.args.num_workers,
             shuffle=False
         )
-        self._config['orig_shape'] = nib.load(self.args.images[0]).shape
-        self._tester = Tester_(self._model, loader, self._device, self._config)
+        orig_shape = nib.load(loader.dataset.name).shape
+        tester = Tester_(self._model, loader, self._device, orig_shape)
+        return tester
 
     def _create_combine_images(self):
         if self.args.combine == 'median':
@@ -106,16 +112,20 @@ class Tester:
             self._combine_images = CalcMean()
 
     def test(self):
+        self._filenames = self.args.images
         pred = self._tester.test()
+        self._post_process(pred)
+        self._close_thread()
+
+    def _post_process(self, pred):
         comb_pred = self._comb_pred(pred)
         tpc = self._correct_masks_topology(comb_pred)
         self._fuse_mask_sdfs(tpc, comb_pred)
-        self._close_thread()
 
     def _comb_pred(self, pred):
         comb_pred = OrderedDict()
         for name, attrs in self._config['parsed_out_data_mode_dict'].items():
-            attrs.append('edge')
+            attrs = attrs + ['edge']
             if name not in comb_pred:
                 comb_pred[name] = list()
             for i, attr in enumerate(attrs):
@@ -139,7 +149,7 @@ class Tester:
             imname = '-'.join([name, attrs[mask_ind]]) + '_prod'
             self._save_image(outer_mask, imname)
         stacked_mask = np.sum(prod_masks, axis=0)
-        fn = self._save_image(stacked_mask, 'stacked-mask')
+        fn = self._save_image(stacked_mask, 'stacked-mask', queue=False)
         tpc = topology_correction(fn, 'probability_map')['corrected']
         self._save_image(tpc, 'stacked-mask_tpc', True)
         return tpc
@@ -170,15 +180,38 @@ class Tester:
             inner_sdf = np.maximum(outer_sdf + EPS, inner_sdf)
         return inner_sdf
 
-    def _save_image(self, im, name, nii=False):
-        obj = nib.load(self.args.images[0])
-        filename = Path(self.args.images[0]).name
+    def _save_image(self, im, name, nii=False, queue=True):
+        obj = nib.load(self._tester.loader.dataset.name)
+        filename = Path(self._tester.loader.dataset.name).name
         filename = re.sub(r'\.nii(\.gz)*$', '', filename)
         filename = '_'.join([filename, name])
         filename = Path(self.args.output_dir, filename).with_suffix('.nii.gz')
         out_obj = im if nii else nib.Nifti1Image(im, obj.affine, obj.header)
-        self._queue.put((filename, out_obj))
+        if queue:
+            self._queue.put((filename, out_obj))
+        else:
+            out_obj.to_filename(filename)
         return str(filename)
+
+
+class TesterDataset(Tester):
+    def _create_testers(self):
+        self._testers = list()
+        for filenames in self._find_images().values():
+            tester = self._create_tester(filenames)
+            self._testers.append(tester)
+
+    def test(self):
+        for self._tester in self._testers:
+            pred = self._tester.test()
+            self._post_process(pred)
+        self._close_thread()
+
+    def _find_images(self):
+        loading_order = self._config['parsed_in_data_mode']
+        group_images = GroupImages(self.args.dirname, loading_order)
+        filenames = group_images.group()
+        return filenames
 
 
 class CalcMedian:
@@ -192,17 +225,18 @@ class CalcMean:
 
 
 class Tester_:
-    def __init__(self, model, loader, device, config):
+    def __init__(self, model, loader, device, orig_shape):
         self.model = model
         self.loader = loader
         self.device = device
-        self.config = config
+        self.orig_shape = orig_shape
 
     def test(self):
         self.model = self.model.eval()
         predictions = OrderedDict()
         with torch.no_grad():
-            for data in tqdm(self.loader):
+            desc = Path(self.loader.dataset.name).name
+            for data in tqdm(self.loader, desc=desc):
                 data = [i.data for i in data]
                 data = torch.cat(data, dim=1).to(self.device)
                 pred = self.model(data)
@@ -230,9 +264,7 @@ class Tester_:
                     chunk = self._transpose(chunk, axis)
                     chunks.append(chunk)
                     start_ind = stop_ind
-
-                chunks = [padcrop(c, self.config['orig_shape'], False)
-                          for c in chunks]
+                chunks = [padcrop(c, self.orig_shape, False) for c in chunks]
                 predictions[name][i] = chunks
 
     def _transpose(self, chunk, axis):
