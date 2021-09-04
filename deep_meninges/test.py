@@ -103,32 +103,38 @@ class Tester:
         stacked_mask = np.sum(prod_masks, axis=0)
         fn = self._save_image(stacked_mask, 'stacked-mask')
 
-        tpc = topology_correction(
-            fn, 'probability_map',
-            overwrite=True,
-            save_data=True,
-            output_dir=self.args.output_dir,
-            file_name=Path(fn).name
-        )
+        tpc = topology_correction(fn, 'probability_map')['corrected']
+        self._save_image(tpc, 'stacked-mask_tpc', True)
 
+        out_data_mode = self._config['parsed_out_data_mode_dict']
+        for i, (name, attrs) in enumerate(out_data_mode.items()):
+            tpc_mask = tpc.get_fdata() > (0.5 + i)
+            imname = f'stacked-mask_tpc_{name}-mask'
+            self._save_image(tpc_mask, imname)
+            sdf_ind = attrs.index('sdf')
+            sdf = comb_pred[name][sdf_ind]
+            fused_sdf = self._fuse_mask_sdf(tpc_mask, sdf)
+            imname = f'stacked-mask_tpc_{name}-sdf'
+            self._save_image(fused_sdf, imname)
 
-    def _save_image(self, im, name):
+    def _save_image(self, im, name, nii=False):
         obj = nib.load(self.args.images[0])
         filename = Path(self.args.images[0]).name
         filename = re.sub(r'\.nii(\.gz)*$', '', filename)
         filename = '_'.join([filename, name])
         filename = Path(self.args.output_dir, filename).with_suffix('.nii.gz')
         print('Save', filename)
-        out_obj = nib.Nifti1Image(im, obj.affine, obj.header)
+        out_obj = im if nii else nib.Nifti1Image(im, obj.affine, obj.header)
         out_obj.to_filename(filename)
         return str(filename)
 
-    def _fuse_mask_ls(self, mask, ls):
+    def _fuse_mask_sdf(self, mask, sdf):
+        eps = 1e-16
         inv_mask = np.logical_not(mask)
-        result_ls = deepcopy(ls)
-        result_ls[mask] = np.clip(ls[mask], -self.args.max_ls_value, 0)
-        result_ls[inv_mask] = np.clip(ls[inv_mask], 0, self.args.max_ls_value)
-        return result_ls
+        result = deepcopy(sdf)
+        result[mask] = np.clip(sdf[mask], -self.args.max_sdf_value, -eps)
+        result[inv_mask] = np.clip(sdf[inv_mask], eps, self.args.max_sdf_value)
+        return result
 
 
 class CalcMedian:

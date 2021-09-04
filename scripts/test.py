@@ -18,7 +18,7 @@ parser.add_argument('-T', '--target-shape', type=int, default=(288, 288),
                     nargs=2, help='Pad or crop the slices to this shape.')
 parser.add_argument('-C', '--combine', choices={'median', 'mean'},
                     default='mean')
-parser.add_argument('-M', '--max-ls-value', default=4, type=float)
+parser.add_argument('-M', '--max-sdf-value', default=4, type=float)
 parser.add_argument('-w', '--num-workers', default=0, type=int)
 args = parser.parse_args()
 
