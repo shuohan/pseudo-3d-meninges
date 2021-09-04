@@ -3,6 +3,7 @@ import re
 import json
 import numpy as np
 import nibabel as nib
+import threading
 from pathlib import Path
 from scipy.ndimage.measurements import label as find_cc
 from copy import deepcopy
@@ -10,6 +11,7 @@ from collections import OrderedDict
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from nighres.shape import topology_correction
+from queue import Queue
 
 from .network import UNet
 from .dataset import SubjectData
@@ -17,6 +19,21 @@ from .utils import padcrop
 
 
 EPS = 1e-16
+
+
+class ImageThread(threading.Thread):
+    def __init__(self, queue):
+        super().__init__()
+        self.queue = queue
+    def run(self):
+        while True:
+            data = self.queue.get()
+            self.queue.task_done()
+            if data is None:
+                break
+            filename, nifti = data
+            print(threading.current_thread().ident, 'save', filename)
+            nifti.to_filename(filename)
 
 
 class Tester:
@@ -27,6 +44,16 @@ class Tester:
         self._load_model()
         self._create_tester()
         self._create_combine_images()
+        self._start_thread()
+
+    def _start_thread(self):
+        self._queue = Queue()
+        self._image_thread = ImageThread(self._queue)
+        self._image_thread.start()
+
+    def _close_thread(self):
+        self._queue.put(None)
+        self._image_thread.join()
 
     def _parse_args(self):
         Path(self.args.output_dir).mkdir(exist_ok=True, parents=True)
@@ -83,6 +110,7 @@ class Tester:
         comb_pred = self._comb_pred(pred)
         tpc = self._correct_masks_topology(comb_pred)
         self._fuse_mask_sdfs(tpc, comb_pred)
+        self._close_thread()
 
     def _comb_pred(self, pred):
         comb_pred = OrderedDict()
@@ -148,9 +176,8 @@ class Tester:
         filename = re.sub(r'\.nii(\.gz)*$', '', filename)
         filename = '_'.join([filename, name])
         filename = Path(self.args.output_dir, filename).with_suffix('.nii.gz')
-        print('Save', filename)
         out_obj = im if nii else nib.Nifti1Image(im, obj.affine, obj.header)
-        out_obj.to_filename(filename)
+        self._queue.put((filename, out_obj))
         return str(filename)
 
 
