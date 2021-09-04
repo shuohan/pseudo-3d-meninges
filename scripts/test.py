@@ -11,7 +11,7 @@ parser.add_argument(
 parser.add_argument('-o', '--output-dir', help='Output directory.')
 parser.add_argument('-c', '--checkpoint', help='Checkpoint of model parameters.')
 parser.add_argument('-a', '--train-config', help='Configurations from training.')
-parser.add_argument('-b', '--batch-size', type=int, default=2,
+parser.add_argument('-b', '--batch-size', type=int, default=8,
                     help='Testing batch size.')
 parser.add_argument('-u', '--use-cuda', action='store_true')
 parser.add_argument('-T', '--target-shape', type=int, default=(288, 288),
@@ -19,6 +19,7 @@ parser.add_argument('-T', '--target-shape', type=int, default=(288, 288),
 parser.add_argument('-C', '--combine', choices={'median', 'mean'},
                     default='mean')
 parser.add_argument('-M', '--max-ls-value', default=4, type=float)
+parser.add_argument('-w', '--num-workers', default=0, type=int)
 args = parser.parse_args()
 
 from deep_meninges.test import Tester

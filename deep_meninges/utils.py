@@ -2,14 +2,18 @@ import torch
 import numpy as np
 
 
-def padcrop(image, target_shape):
-    bbox = calc_padcrop_bbox(image.shape[1:], target_shape)
+def padcrop(image, target_shape, use_channels=True):
+    shape = image.shape[1:] if use_channels else image.shape
+    bbox = calc_padcrop_bbox(shape, target_shape)
     lpads = [max(0, 0 - b.start) for b in bbox]
-    rpads = [max(0, b.stop - s) for s, b in zip(image.shape[1:], bbox)]
-    pad_width = ((0, 0), ) + tuple(zip(lpads, rpads))
+    rpads = [max(0, b.stop - s) for s, b in zip(shape, bbox)]
+    pad_width = tuple(zip(lpads, rpads))
+    c_bbox = tuple(slice(b.start + l, b.stop + l) for b, l in zip(bbox, lpads))
+    if use_channels:
+        pad_width = ((0, 0), ) + pad_width
+        c_bbox = (..., ) + c_bbox
     padded_image = np.pad(image, pad_width, mode='edge')
-    c_bbox = [slice(b.start + l, b.stop + l) for b, l in zip(bbox, lpads)]
-    cropped_image = padded_image[(..., ) + tuple(c_bbox)]
+    cropped_image = padded_image[c_bbox]
     return cropped_image
 
 

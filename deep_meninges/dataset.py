@@ -264,6 +264,10 @@ class SubjectData:
         self._create_images(filenames)
         self._check_im_shapes()
 
+    @property
+    def shape(self):
+        return list(self._images.values())[0][0].shape
+
     def _create_images(self, filenames):
         self._images = OrderedDict()
         for im_type in self.im_types:
