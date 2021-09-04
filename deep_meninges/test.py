@@ -1,17 +1,19 @@
 import torch
 import re
+import json
 import numpy as np
 import nibabel as nib
 from pathlib import Path
 from scipy.ndimage.measurements import label as find_cc
 from copy import deepcopy
+from collections import OrderedDict
 
 from .network import UNet
 from .dataset import ImageSlices
 from .utils import padcrop
 
 
-class TesterBoth:
+class Tester:
     def __init__(self, args):
         self.args = args
         self._parse_args()
@@ -21,6 +23,8 @@ class TesterBoth:
 
     def _parse_args(self):
         Path(self.args.output_dir).mkdir(exist_ok=True, parents=True)
+        with open(self.args.train_config) as f:
+            self._config = json.load(f)
 
         if self.args.use_cuda:
             self._device = torch.device('cuda')
@@ -28,34 +32,34 @@ class TesterBoth:
             self._device = torch.device('cpu')
 
     def _load_model(self):
-        in_channels = 2 if self.args.input_data_mode == 't1w_t2w' else 1
-        out_channels = 2 if self.args.output_data_mode == 'ct_mask' else 1
-        model = UNet(in_channels, out_channels, 5, self.args.num_channels)
-        self._model = model.cuda() if self.args.use_cuda else model
+        in_channels = len(self._config['parsed_in_data_mode']) \
+            * self._config['stack_size']
+        self._model = UNet(
+            in_channels,
+            self._config['parsed_out_data_mode_dict'],
+            self._config['num_trans_down'],
+            self._config['num_channels'],
+            num_out_hidden=self._config['num_out_hidden']
+        ).to(self._device)
         self._cp = torch.load(self.args.checkpoint, map_location=self._device)
         self._model.load_state_dict(self._cp['model_state_dict'])
 
     def _create_testers(self):
-        input_slices = list()
+        all_slices = list()
         self._nifti = list()
         target_shape = self.args.target_shape
-        if 't1w' in self.args.input_data_mode:
-            t1w_obj = nib.load(self.args.t1w)
-            t1w_slices = ImageSlices(t1w_obj, '', target_shape=target_shape)
-            input_slices.append(t1w_slices)
-            self._nifti.append(t1w_obj)
-        if 't2w' in self.args.input_data_mode:
-            t2w_obj = nib.load(self.args.t2w)
-            t2w_slices = ImageSlices(t2w_obj, '', target_shape=target_shape)
-            input_slices.append(t2w_slices)
-            self._nifti.append(t2w_obj)
+        for fn in self.args.images:
+            nii_obj = nib.load(fn)
+            im_slices = ImageSlices(nii_obj, '', target_shape=target_shape)
+            all_slices.append(im_slices)
+            self._nifti.append(nii_obj)
 
         self._testers = list()
         for axis in range(3):
-            self._testers.append(self._create_tester(input_slices, axis))
+            self._testers.append(self._create_tester(all_slices, axis))
 
-    def _create_tester(self, input_slices, axis):
-        return TesterBoth_(self._model, input_slices, CombineSlices(axis), self.args)
+    def _create_tester(self, all_slices, axis):
+        return Tester_(self._model, all_slices, CombineSlices(axis), self.args)
 
     def _create_combine_images(self):
         if self.args.combine == 'median':
@@ -64,21 +68,26 @@ class TesterBoth:
             self._combine_images = CalcMean()
 
     def test(self):
-        cts = list()
-        masks = list()
+        formatted_pred = OrderedDict()
         for axis, tester in enumerate(self._testers):
-            ct, mask = tester.test()
-            ct = padcrop(ct, self._nifti[0].shape)
-            mask = padcrop(mask, self._nifti[0].shape)
-            self._save_image(ct, 'ct_axis-%d' % axis)
-            self._save_image(mask, 'mask_axis-%d' % axis)
-            cts.append(ct)
-            masks.append(mask)
-        ct = self._combine_images(cts)
-        mask = self._combine_images(masks)
-        mask = self._cleanup_mask(mask)
-        self._save_image(ct, 'ct')
-        self._save_image(mask > 0.5, 'mask')
+            pred = tester.test()
+            pred = [padcrop(ct, self._nifti[0].shape) for p in pred]
+            for name, attrs in self._config['parsed_out_data_mode_dict'].items():
+                attrs.append('edge')
+                if name not in formatted_pred:
+                    formatted_pred[name] = OrderedDict()
+                for p, attr in zip(pred, attrs):
+                    if attr not in formatted_pred[name]:
+                        formatted_pred[name] = list()
+                    formatted_pred[name].append(p)
+
+        for name, pred_all in formatted_pred.items():
+            for attr, pred_single_image in pred_all.items():
+                name = '-'.join([name, attr])
+                for axis, pred_single_axis in enumerate(pred_single_image):
+                    self._save_image(pred_single_axis, f'{name}_axis-{axis}')
+                comb = self._combine_images(pred_single_image)
+                self._save_image(comb, f'{name}')
 
     def _save_image(self, im, name):
         filename = Path(self.args.t1w).name
@@ -88,61 +97,13 @@ class TesterBoth:
         obj = nib.Nifti1Image(im, self._nifti[0].affine, self._nifti[0].header)
         obj.to_filename(filename)
 
-    def _cleanup_mask(self, mask):
-        mask = mask > 0.5
-        labels, num_labels = find_cc(mask)
-        counts = np.bincount(labels.flatten())
-        for l in np.argsort(counts)[::-1]:
-            fg = labels == l
-            if np.array_equal(np.unique(mask[fg]), np.array([True])):
-                break
-        return fg
-
-
-class TesterCT(TesterBoth):
-    def _create_tester(self, input_slices, axis):
-        return TesterCT_(self._model, input_slices, CombineSlices(axis), self.args)
-
-    def test(self):
-        cts = list()
-        for axis, tester in enumerate(self._testers):
-            ct = tester.test()
-            ct = padcrop(ct, self._nifti[0].shape)
-            self._save_image(ct, 'ct_axis-%d' % axis)
-            cts.append(ct)
-        ct = self._combine_images(cts)
-        self._save_image(ct, 'ct')
-
-
-class TesterMask(TesterBoth):
-    def _create_tester(self, input_slices, axis):
-        return TesterMask_(self._model, input_slices, CombineSlices(axis), self.args)
-
-    def test(self):
-        masks = list()
-        levelsets = list()
-        for axis, tester in enumerate(self._testers):
-            mask, ls = tester.test()
-            mask = padcrop(mask, self._nifti[0].shape)
-            ls = padcrop(ls, self._nifti[0].shape)
-            self._save_image(mask, 'mask_axis-%d' % axis)
-            self._save_image(ls, 'ls_axis-%d' % axis)
-            masks.append(mask)
-            levelsets.append(ls)
-        mask = self._combine_images(masks)
-        mask = self._cleanup_mask(mask)
-        ls = self._combine_images(levelsets)
-        self._save_image(mask > 0.5, 'mask')
-        self._save_image(ls, 'ls')
-        fusion = self._fuse_mask_ls(mask, ls)
-        self._save_image(fusion, 'fusion')
-
     def _fuse_mask_ls(self, mask, ls):
         inv_mask = np.logical_not(mask)
         result_ls = deepcopy(ls)
         result_ls[mask] = np.clip(ls[mask], -self.args.max_ls_value, 0)
         result_ls[inv_mask] = np.clip(ls[inv_mask], 0, self.args.max_ls_value)
         return result_ls
+
 
 class CalcMedian:
     def __call__(self, images):
@@ -169,7 +130,7 @@ class CombineSlices:
         return images
 
 
-class TesterBoth_:
+class Tester_:
     def __init__(self, model, input_slices, combine_slices, args):
         self.model = model
         self.input_slices = input_slices
@@ -190,56 +151,33 @@ class TesterBoth_:
 
     def test(self):
         self.model = self.model.eval()
-        ct_slices = list()
-        mask_slices = list()
         with torch.no_grad():
+            results = OrderedDict()
             for data in self._extract_slices():
-                ct_mask = self.model(data)
-                ct = ct_mask[:, 0:1, ...]
-                mask = torch.sigmoid(ct_mask[:, 1:2, ...])
-                ct_slices.append(ct.cpu().numpy())
-                mask_slices.append(mask.cpu().numpy())
-        ct = self.combine_slices(ct_slices)
-        mask = self.combine_slices(mask_slices)
-        return ct, mask
+                print(data.shape)
+                pred = self.model(data)
+                for name, p in pred.items():
+                    if name not in results:
+                        results[name] = [[] for _ in range(len(p))]
+                    for i, pp in enumerate(p):
+                        results[name][i].append(pp.cpu().numpy())
+
+        for name, r in results.items():
+            for i, rr in enumerate(r):
+                results[name][i] = self.combine_slices(rr)
+        return results
 
     def _extract_slices(self):
         num_slices = self.input_slices[0].shape[self._axis]
+        print('num_slices', num_slices)
         for start_ind in range(0, num_slices, self.args.batch_size):
             stop_ind = min(start_ind + self.args.batch_size, num_slices)
             data = [list() for _ in range(len(self.input_slices))]
             for ind in range(start_ind, stop_ind):
                 for i, slices in enumerate(self.input_slices):
-                    data[i].append(slices.extract_slice(self._axis, ind).data)
+                    d = slices.extract_slice(self._axis, ind).data
+                    data[i].append(d)
             data = [np.stack(d) for d in data]
             data = np.stack(data, 1)
             data = torch.tensor(data).float().to(device=self._device)
             yield data
-
-
-class TesterCT_(TesterBoth_):
-    def test(self):
-        self.model = self.model.eval()
-        ct_slices = list()
-        with torch.no_grad():
-            for data in self._extract_slices():
-                ct = self.model(data)
-                ct_slices.append(ct.cpu().numpy())
-        ct = self.combine_slices(ct_slices)
-        return ct
-
-
-class TesterMask_(TesterBoth_):
-    def test(self):
-        self.model = self.model.eval()
-        mask_slices = list()
-        ls_slices = list()
-        with torch.no_grad():
-            for data in self._extract_slices():
-                mask, ls, edge = self.model(data)
-                # mask = torch.sigmoid(mask)
-                mask_slices.append(mask.cpu().numpy())
-                ls_slices.append(ls.cpu().numpy())
-        mask = self.combine_slices(mask_slices)
-        ls = self.combine_slices(ls_slices)
-        return mask, ls
