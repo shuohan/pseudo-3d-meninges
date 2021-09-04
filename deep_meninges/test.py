@@ -80,6 +80,11 @@ class Tester:
 
     def test(self):
         pred = self._tester.test()
+        comb_pred = self._comb_pred(pred)
+        tpc = self._correct_masks_topology(comb_pred)
+        self._fuse_mask_sdfs(tpc, comb_pred)
+
+    def _comb_pred(self, pred):
         comb_pred = OrderedDict()
         for name, attrs in self._config['parsed_out_data_mode_dict'].items():
             attrs.append('edge')
@@ -94,7 +99,9 @@ class Tester:
                 comb_chunk = self._combine_images(chunks)
                 comb_pred[name].append(comb_chunk)
                 self._save_image(comb_chunk, imname)
+        return comb_pred
 
+    def _correct_masks_topology(self, comb_pred):
         outer_mask = 1
         prod_masks = list()
         for name, attrs in self._config['parsed_out_data_mode_dict'].items():
@@ -105,10 +112,11 @@ class Tester:
             self._save_image(outer_mask, imname)
         stacked_mask = np.sum(prod_masks, axis=0)
         fn = self._save_image(stacked_mask, 'stacked-mask')
-
         tpc = topology_correction(fn, 'probability_map')['corrected']
         self._save_image(tpc, 'stacked-mask_tpc', True)
+        return tpc
 
+    def _fuse_mask_sdfs(self, tpc, comb_pred):
         outer_sdf = None
         out_data_mode = self._config['parsed_out_data_mode_dict']
         for i, (name, attrs) in enumerate(out_data_mode.items()):
@@ -116,16 +124,23 @@ class Tester:
             imname = f'stacked-mask_tpc_{name}-mask'
             self._save_image(tpc_mask, imname)
             sdf_ind = attrs.index('sdf')
-
             inner_sdf = comb_pred[name][sdf_ind]
-            if outer_sdf is None:
-                outer_sdf = inner_sdf
-            else:
-                outer_sdf = np.maximum(outer_sdf + EPS, inner_sdf)
-
+            outer_sdf = self._intersect_sdfs(outer_sdf, inner_sdf)
             fused_sdf = self._fuse_mask_sdf(tpc_mask, outer_sdf)
             imname = f'stacked-mask_tpc_{name}-sdf'
             self._save_image(fused_sdf, imname)
+
+    def _fuse_mask_sdf(self, mask, sdf):
+        inv_mask = np.logical_not(mask)
+        result = deepcopy(sdf)
+        result[mask] = np.clip(sdf[mask], -self.args.max_sdf_value, -EPS)
+        result[inv_mask] = np.clip(sdf[inv_mask], EPS, self.args.max_sdf_value)
+        return result
+
+    def _intersect_sdfs(self, outer_sdf, inner_sdf):
+        if outer_sdf is not None:
+            inner_sdf = np.maximum(outer_sdf + EPS, inner_sdf)
+        return inner_sdf
 
     def _save_image(self, im, name, nii=False):
         obj = nib.load(self.args.images[0])
@@ -137,13 +152,6 @@ class Tester:
         out_obj = im if nii else nib.Nifti1Image(im, obj.affine, obj.header)
         out_obj.to_filename(filename)
         return str(filename)
-
-    def _fuse_mask_sdf(self, mask, sdf):
-        inv_mask = np.logical_not(mask)
-        result = deepcopy(sdf)
-        result[mask] = np.clip(sdf[mask], -self.args.max_sdf_value, -EPS)
-        result[inv_mask] = np.clip(sdf[inv_mask], EPS, self.args.max_sdf_value)
-        return result
 
 
 class CalcMedian:
