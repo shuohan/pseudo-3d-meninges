@@ -16,6 +16,9 @@ from .dataset import SubjectData
 from .utils import padcrop
 
 
+EPS = 1e-16
+
+
 class Tester:
     def __init__(self, args):
         self.args = args
@@ -106,14 +109,21 @@ class Tester:
         tpc = topology_correction(fn, 'probability_map')['corrected']
         self._save_image(tpc, 'stacked-mask_tpc', True)
 
+        outer_sdf = None
         out_data_mode = self._config['parsed_out_data_mode_dict']
         for i, (name, attrs) in enumerate(out_data_mode.items()):
             tpc_mask = tpc.get_fdata() > (0.5 + i)
             imname = f'stacked-mask_tpc_{name}-mask'
             self._save_image(tpc_mask, imname)
             sdf_ind = attrs.index('sdf')
-            sdf = comb_pred[name][sdf_ind]
-            fused_sdf = self._fuse_mask_sdf(tpc_mask, sdf)
+
+            inner_sdf = comb_pred[name][sdf_ind]
+            if outer_sdf is None:
+                outer_sdf = inner_sdf
+            else:
+                outer_sdf = np.maximum(outer_sdf + EPS, inner_sdf)
+
+            fused_sdf = self._fuse_mask_sdf(tpc_mask, outer_sdf)
             imname = f'stacked-mask_tpc_{name}-sdf'
             self._save_image(fused_sdf, imname)
 
@@ -129,11 +139,10 @@ class Tester:
         return str(filename)
 
     def _fuse_mask_sdf(self, mask, sdf):
-        eps = 1e-16
         inv_mask = np.logical_not(mask)
         result = deepcopy(sdf)
-        result[mask] = np.clip(sdf[mask], -self.args.max_sdf_value, -eps)
-        result[inv_mask] = np.clip(sdf[inv_mask], eps, self.args.max_sdf_value)
+        result[mask] = np.clip(sdf[mask], -self.args.max_sdf_value, -EPS)
+        result[inv_mask] = np.clip(sdf[inv_mask], EPS, self.args.max_sdf_value)
         return result
 
 
