@@ -9,6 +9,7 @@ from copy import deepcopy
 from collections import OrderedDict
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+from nighres.shape import topology_correction
 
 from .network import UNet
 from .dataset import SubjectData
@@ -76,8 +77,11 @@ class Tester:
 
     def test(self):
         pred = self._tester.test()
+        comb_pred = OrderedDict()
         for name, attrs in self._config['parsed_out_data_mode_dict'].items():
             attrs.append('edge')
+            if name not in comb_pred:
+                comb_pred[name] = list()
             for i, attr in enumerate(attrs):
                 imname = '-'.join([name, attr])
                 chunks = pred[name][i]
@@ -85,7 +89,28 @@ class Tester:
                     chunk_name = '_'.join([imname, f'axis-{axis}'])
                     self._save_image(chunk, chunk_name)
                 comb_chunk = self._combine_images(chunks)
+                comb_pred[name].append(comb_chunk)
                 self._save_image(comb_chunk, imname)
+
+        outer_mask = 1
+        prod_masks = list()
+        for name, attrs in self._config['parsed_out_data_mode_dict'].items():
+            mask_ind = attrs.index('mask')
+            outer_mask = comb_pred[name][mask_ind] * outer_mask
+            prod_masks.append(outer_mask)
+            imname = '-'.join([name, attrs[mask_ind]]) + '_prod'
+            self._save_image(outer_mask, imname)
+        stacked_mask = np.sum(prod_masks, axis=0)
+        fn = self._save_image(stacked_mask, 'stacked-mask')
+
+        tpc = topology_correction(
+            fn, 'probability_map',
+            overwrite=True,
+            save_data=True,
+            output_dir=self.args.output_dir,
+            file_name=Path(fn).name
+        )
+
 
     def _save_image(self, im, name):
         obj = nib.load(self.args.images[0])
@@ -93,8 +118,10 @@ class Tester:
         filename = re.sub(r'\.nii(\.gz)*$', '', filename)
         filename = '_'.join([filename, name])
         filename = Path(self.args.output_dir, filename).with_suffix('.nii.gz')
+        print('Save', filename)
         out_obj = nib.Nifti1Image(im, obj.affine, obj.header)
         out_obj.to_filename(filename)
+        return str(filename)
 
     def _fuse_mask_ls(self, mask, ls):
         inv_mask = np.logical_not(mask)
