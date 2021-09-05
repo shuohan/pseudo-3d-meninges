@@ -94,17 +94,23 @@ class ContentsBuilderValid(ContentsBuilder):
     def build(self):
         counter = self._create_counter()
         self._contents = self._create_contents(counter)
-        valid_counter = Counter('valid', self.args.num_valid_batches)
+        valid_counter = self._create_valid_counter(counter.counters[0])
         valid_contents = ContentsValidProg(valid_counter)
         self._contents.valid_contents = valid_contents
-        self._set_observers()
         self._contents.set_value('min_v_loss', float('inf'))
+        self._set_observers()
         return self
+
+    def _create_valid_counter(self, epoch_counter):
+        valid_counter = Counter('valid', self.args.num_valid_batches)
+        counter = Counters([epoch_counter, valid_counter])
+        return counter
 
     def _set_observers(self):
         super()._set_observers()
         self._set_valid_savers()
         self._set_valid_printer()
+        self._set_valid_logger()
 
     def _set_valid_savers(self):
         self._set_im_savers(
@@ -113,8 +119,13 @@ class ContentsBuilderValid(ContentsBuilder):
         )
 
     def _set_valid_printer(self):
-        printer = TqdmPrinterNoDesc(loc_offset=4)
+        printer = ValidPrinter(loc_offset=4)
         self.contents.valid_contents.register(printer)
+
+    def _set_valid_logger(self):
+        attrs = [attr for attr in self._value_attrs if attr.startswith('v_')]
+        logger = Logger(self.args.valid_loss_filename, attrs=attrs)
+        self.contents.valid_contents.register(logger)
 
     def _init_value_attrs(self):
         super()._init_value_attrs()
@@ -165,6 +176,22 @@ class ContentsValidProg(_Contents):
     def __init__(self, counter):
         super().__init__()
         self.counter = counter
+        self._values = dict()
+
+    def set_value(self, value_attr, value):
+        self._values[value_attr] = value
+
+    def get_value(self, value_attr):
+        if value_attr not in self._values:
+            return float('nan')
+        else:
+            return self._values[value_attr]
+
+    def get_values(self, value_attrs):
+        return [self._values.get(a, float('nan')) for a in value_attrs]
+
+    def get_value_attrs(self):
+        return list(self._values.keys())
 
 
 class CheckpointSaverValid(CheckpointSaver):
@@ -182,3 +209,12 @@ class CheckpointSaverValid(CheckpointSaver):
 class ImageSaver(_ImageSaver):
     def _get_counter_named_index(self):
         return (self.contents.counter['epoch'].named_index1, )
+
+
+class ValidPrinter(TqdmPrinterNoDesc):
+    def _get_counter_num(self):
+        return self.contents.counter['valid'].num
+    def _get_counter_index(self):
+        return self.contents.counter['valid'].index1
+    def _get_counter_name(self):
+        return self.contents.counter['valid'].name

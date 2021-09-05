@@ -280,6 +280,8 @@ class TrainerValid(Trainer):
     def _add_more_args(self):
         super()._add_more_args()
         self.args.num_valid_batches = len(self._valid_loader)
+        valid_loss_fn = str(Path(self.args.output_dir, 'loss_valid.csv'))
+        self.args.valid_loss_filename = valid_loss_fn
 
     def _create_valid_loader(self):
         target_shape = self.args.target_shape
@@ -313,12 +315,14 @@ class TrainerValid(Trainer):
         self._model.eval()
         total_loss_buffer = list()
         for k, data in enumerate(self._valid_loader):
-            self._contents.valid_contents.counter.index0 = k
+            self._contents.valid_contents.counter['valid'].index0 = k
             input_data, true_data = self._split_data(data)
             pred = self._apply_network(input_data)
             losses = self._calc_total_loss(pred, true_data)
             total_loss = self._sum_losses(losses)
             total_loss_buffer.append(total_loss)
+
+            self._record_valid_losses(losses, total_loss)
             self._contents.valid_contents.notify_observers()
 
         total_loss = torch.mean(torch.stack(total_loss_buffer, dim=0))
@@ -331,3 +335,16 @@ class TrainerValid(Trainer):
         self._contents.update_valid_loss(total_loss)
 
         self._valid_loader.dataset.update()
+
+    def _record_valid_losses(self, losses, total_loss):
+        for outname, attrs in self.args.parsed_out_data_mode_dict.items():
+            for loss, attr in zip(losses[outname], attrs):
+                attr = '-'.join([outname, attr])
+                attr = '_'.join(['v', attr])
+                if isinstance(loss, torch.Tensor):
+                    loss_val = loss.item()
+                elif loss == 0:
+                    loss_val = float('nan')
+                self._contents.valid_contents.set_value(attr, loss_val)
+        attr = '_'.join(['v', 'total_loss'])
+        self._contents.valid_contents.set_value(attr, total_loss.item())
