@@ -11,7 +11,7 @@ from scipy.ndimage.measurements import label as find_cc
 from copy import deepcopy
 from collections import OrderedDict
 from torch.utils.data import DataLoader
-from tqdm import tqdm
+from tqdm import tqdm, trange
 from queue import Queue
 
 from .network import UNet
@@ -39,22 +39,30 @@ class ImageThread(threading.Thread):
 
 
 class Tester:
-    def __init__(self, args):
+    def __init__(self, args, bar_position=0):
         self.args = args
+        self.bar_position = bar_position
         self._parse_args()
         self._get_device()
         self._load_model()
         self._create_testers()
+        self._create_prog_bar()
         self._create_combine_images()
         self._start_thread()
 
+    def _create_prog_bar(self):
+        num = len(self._tester.loader)
+        desc = Path(self._tester.loader.dataset.name).name
+        self._prog_bar = trange(num, desc=desc, position=self.bar_position)
+        self._tester.prog_bar = self._prog_bar
+
     def _start_thread(self):
         self._queue = Queue()
-        self._desc_bar = tqdm(bar_format='{desc}', position=0)
+        self._desc_bar = tqdm(bar_format='{desc}', position=self.bar_position+1)
 
         def _update_message(self, filename):
             desc = f'{self.tpc_message}saved {filename}'
-            self.set_description(desc)
+            self.set_description_str(desc)
             self.refresh()
         def _set_tpc_message(self, message):
             self.lock.acquire()
@@ -139,8 +147,6 @@ class Tester:
 
     def _post_process(self, pred):
         comb_pred = self._comb_pred(pred)
-        self._desc_bar.set_description()
-        self._desc_bar.refresh()
         tpc = self._correct_masks_topology(comb_pred)
         self._fuse_mask_sdfs(tpc, comb_pred)
 
@@ -229,6 +235,13 @@ class Tester:
 
 
 class TesterDataset(Tester):
+    def _create_prog_bar(self):
+        num = len(self._testers[0].loader)
+        desc = Path(self._testers[0].loader.dataset.name).name
+        self._prog_bar = trange(num, desc=desc, position=self.bar_position)
+        for tester in self._testers:
+            tester.prog_bar = self._prog_bar
+
     def _create_testers(self):
         self._testers = list()
         for filenames in self._find_images().values():
@@ -259,18 +272,21 @@ class CalcMean:
 
 
 class Tester_:
-    def __init__(self, model, loader, device, orig_shape):
+    def __init__(self, model, loader, device, orig_shape, prog_bar=None):
         self.model = model
         self.loader = loader
         self.device = device
         self.orig_shape = orig_shape
+        self.prog_bar = prog_bar
 
     def test(self):
         self.model = self.model.eval()
         predictions = OrderedDict()
+        self.prog_bar.n = len(self.loader)
+        self.prog_bar.reset()
         with torch.no_grad():
-            desc = Path(self.loader.dataset.name).name
-            for data in tqdm(self.loader, desc=desc, position=0):
+            for data in self.loader:
+                self.prog_bar.update()
                 data = [i.data for i in data]
                 data = torch.cat(data, dim=1).to(self.device)
                 pred = self.model(data)
