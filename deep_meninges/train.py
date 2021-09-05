@@ -163,7 +163,7 @@ class Trainer:
 
     def _calc_sdf_loss(self, pred_sdf, true_sdf, pred_edge):
         error = pred_edge * (pred_sdf - true_sdf)
-        sdf_loss = torch.mean(torch.abs(error))
+        sdf_loss = torch.sum(torch.abs(error)) / torch.sum(pred_edge)
         return sdf_loss
 
     def _add_more_args(self):
