@@ -28,7 +28,7 @@ def create_dataset(
     images = GI(dirname, loading_order).group()
     subjects = list()
     for subname, filenames in images.items():
-        SD = SubjectDataMemmap if memmap else SubjectData
+        SD = SubjectDataMemmap if memmap else SubjectDataObj
         subject = SD(
             subname,
             filenames,
@@ -64,7 +64,7 @@ def create_dataset_multi(
     for images in all_images:
         subjects = list()
         for subname, filenames in images.items():
-            SD = SubjectDataMemmap if memmap else SubjectData
+            SD = SubjectDataMemmap if memmap else SubjectDataObj
             subject = SD(
                 subname,
                 filenames,
@@ -243,7 +243,81 @@ class DatasetMulti(Dataset_):
         self._dataset_order = np.roll(self._dataset_order, 1)
 
 
+class ImageSlices:
+    def __init__(self, nifti, name, stack_size=1, target_shape=None):
+        self.nifti = nifti
+        self.name = name
+        self.target_shape = target_shape
+        self.stack_size = stack_size
+        assert self.stack_size % 2 == 1
+        self._num_cumsum = np.cumsum(self.shape)
+
+    @property
+    def shape(self):
+        return tuple(s - self.stack_size + 1 for s in self.nifti.shape)
+
+    def __getitem__(self, index):
+        self._check_index(index)
+        axis, slice_ind = self._split_index(index)
+        image_slice = self.extract_slice(axis, slice_ind)
+        return image_slice
+
+    def _split_index(self, index):
+        axis = np.searchsorted(self._num_cumsum, index, side='right')
+        offset = 0 if axis == 0 else self._num_cumsum[axis - 1]
+        index = index - offset
+        return axis, index
+
+    def extract_slice(self, axis, index):
+        indexing = self._calc_indexing(axis, index)
+        image_slice = self._extract_slice(indexing)
+        image_slice = np.moveaxis(image_slice, axis, 0)
+        if axis in [0, 1]: # top bottom swap
+            image_slice = np.flip(image_slice, -1)
+        if self.target_shape:
+            image_slice = padcrop(image_slice, self.target_shape)
+        name = self._get_name(axis, index)
+        image_slice = NamedData(name=name, data=image_slice)
+        return image_slice
+
+    def _extract_slice(self, indexing):
+        if not hasattr(self, '_image_buffer'):
+            self._image_buffer = self.nifti.get_fdata(dtype=np.float32)
+        image_slice = self._image_buffer[indexing]
+        return image_slice
+
+    def _get_name(self, axis, slice_ind):
+        name = [f'axis-{axis}', f'slice-{slice_ind}']
+        if self.name:
+            name.insert(0, self.name)
+        return '_'.join(name)
+
+    def _calc_indexing(self, axis, index):
+        result = [slice(None)] * self.nifti.ndim
+        result[axis] = slice(index, index + self.stack_size)
+        return tuple(result)
+
+    def __len__(self):
+        return self._num_cumsum[-1]
+
+    def _check_index(self, index):
+        assert index >= 0 and index < len(self)
+
+
+class ImageSlicesDataobj(ImageSlices):
+    def _extract_slice(self, indexing):
+        image = self.nifti.dataobj
+        image_slice = image[indexing].astype(np.float32)
+        return image_slice
+
+
+class ImageSlicesMemmap(ImageSlices):
+    def _extract_slice(self, indexing):
+        return self.nifti[indexing].copy()
+
+
 class SubjectData:
+    image_slices_cls = ImageSlices
 
     def __init__(
             self, name, filenames,
@@ -277,7 +351,7 @@ class SubjectData:
             for fn in fns:
                 nifti = nib.load(fn)
                 contrast = self._get_contrast(fn)
-                im_slices = ImageSlicesDataobj(
+                im_slices = self.image_slices_cls(
                     nifti, contrast,
                     stack_size=self.stack_size,
                     target_shape=self.target_shape
@@ -319,7 +393,12 @@ class SubjectData:
         return len(self._images[key][0])
 
 
+class SubjectDataObj(SubjectData):
+    image_slices_cls = ImageSlicesDataobj
+
+
 class SubjectDataMemmap(SubjectData):
+    image_slices_cls = ImageSlicesMemmap
 
     def _create_images(self, filenames):
         self._images = dict()
@@ -347,78 +426,6 @@ class SubjectDataMemmap(SubjectData):
         result = result.split('_')
         result = result[2] if len(result) > 2 else ''
         return result
-
-
-class ImageSlices:
-    def __init__(self, nifti, name, stack_size=1, target_shape=None):
-        self.nifti = nifti
-        self.name = name
-        self.target_shape = target_shape
-        self.stack_size = stack_size
-        assert self.stack_size % 2 == 1
-        self._num_cumsum = np.cumsum(self.shape)
-
-    @property
-    def shape(self):
-        return tuple(s - self.stack_size + 1 for s in self.nifti.shape)
-
-    def __getitem__(self, index):
-        self._check_index(index)
-        axis, slice_ind = self._split_index(index)
-        image_slice = self.extract_slice(axis, slice_ind)
-        return image_slice
-
-    def _split_index(self, index):
-        axis = np.searchsorted(self._num_cumsum, index, side='right')
-        offset = 0 if axis == 0 else self._num_cumsum[axis - 1]
-        index = index - offset
-        return axis, index
-
-    def extract_slice(self, axis, index):
-        indexing = self._calc_indexing(axis, index)
-        image_slice = self._extract_slice(indexing)
-        image_slice = np.moveaxis(image_slice, axis, 0)
-        if axis in [0, 1]: # top bottom swap
-            image_slice = np.flip(image_slice, -1)
-        if self.target_shape:
-            image_slice = padcrop(image_slice, self.target_shape)
-        name = self._get_name(axis, index)
-        image_slice = NamedData(name=name, data=image_slice)
-        return image_slice
-
-    def _extract_slice(self, indexing):
-        image = self.nifti.get_fdata(dtype=np.float32)
-        image_slice = image[indexing]
-        return image_slice
-
-    def _get_name(self, axis, slice_ind):
-        name = [f'axis-{axis}', f'slice-{slice_ind}']
-        if self.name:
-            name.insert(0, self.name)
-        return '_'.join(name)
-
-    def _calc_indexing(self, axis, index):
-        result = [slice(None)] * self.nifti.ndim
-        result[axis] = slice(index, index + self.stack_size)
-        return tuple(result)
-
-    def __len__(self):
-        return self._num_cumsum[-1]
-
-    def _check_index(self, index):
-        assert index >= 0 and index < len(self)
-
-
-class ImageSlicesDataobj(ImageSlices):
-    def _extract_slice(self, indexing):
-        image = self.nifti.dataobj
-        image_slice = image[indexing].astype(np.float32)
-        return image_slice
-
-
-class ImageSlicesMemmap(ImageSlices):
-    def _extract_slice(self, indexing):
-        return self.nifti[indexing].copy()
 
 
 class FlipLR:
