@@ -1,19 +1,17 @@
 import os
-import sys
 import torch
 import re
 import json
 import numpy as np
 import nibabel as nib
 import threading
-import contextlib
+import types
 from pathlib import Path
 from scipy.ndimage.measurements import label as find_cc
 from copy import deepcopy
 from collections import OrderedDict
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from nighres.shape import topology_correction
 from queue import Queue
 
 from .network import UNet
@@ -22,15 +20,6 @@ from .utils import padcrop
 
 
 EPS = 1e-16
-
-
-class HidePrint:
-    def __enter__(self):
-        self._stdout = sys.stdout
-        sys.stdout = open(os.devnull, 'w')
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        sys.stdout.close()
-        sys.stdout = self._stdout
 
 
 class ImageThread(threading.Thread):
@@ -45,9 +34,8 @@ class ImageThread(threading.Thread):
             if data is None:
                 break
             filename, nifti = data
-            self.desc_bar.set_description(f'saved {filename}')
+            self.desc_bar.update_message(filename)
             nifti.to_filename(filename)
-            self.desc_bar.refresh()
 
 
 class Tester:
@@ -62,7 +50,24 @@ class Tester:
 
     def _start_thread(self):
         self._queue = Queue()
-        self._desc_bar = tqdm(bar_format='{desc}', position=1)
+        self._desc_bar = tqdm(bar_format='{desc}', position=0)
+
+        def _update_message(self, filename):
+            desc = f'{self.tpc_message}saved {filename}'
+            self.set_description(desc)
+            self.refresh()
+        def _set_tpc_message(self, message):
+            self.lock.acquire()
+            self.tpc_message = message
+            self.lock.release()
+
+        self._desc_bar.lock = threading.Lock()
+        self._desc_bar.tpc_message = ''
+        self._desc_bar.update_message = types.MethodType(
+            _update_message, self._desc_bar)
+        self._desc_bar.set_tpc_message = types.MethodType(
+            _set_tpc_message, self._desc_bar)
+
         self._image_thread = ImageThread(self._queue, self._desc_bar)
         self._image_thread.start()
 
@@ -134,7 +139,7 @@ class Tester:
 
     def _post_process(self, pred):
         comb_pred = self._comb_pred(pred)
-        self._desc_bar.set_description('topology correction')
+        self._desc_bar.set_description()
         self._desc_bar.refresh()
         tpc = self._correct_masks_topology(comb_pred)
         self._fuse_mask_sdfs(tpc, comb_pred)
@@ -167,16 +172,22 @@ class Tester:
             self._save_image(outer_mask, imname)
         stacked_mask = np.sum(prod_masks, axis=0)
         fn = self._save_image(stacked_mask, 'stacked-mask', queue=False)
-        with contextlib.redirect_stdout(None):
-            tpc = topology_correction(fn, 'probability_map')['corrected']
-        self._save_image(tpc, 'stacked-mask_tpc', True)
+        tpc = self._tpc(fn)
+        return tpc
+
+    def _tpc(self, fn):
+        self._desc_bar.set_tpc_message('correcting topology... ')
+        output = self._join_output_filename('stacked-mask_tpc')
+        os.system(f'tpc.py -i {fn} -o {output} > /dev/null')
+        tpc = nib.load(output).get_fdata()
+        self._desc_bar.set_tpc_message('')
         return tpc
 
     def _fuse_mask_sdfs(self, tpc, comb_pred):
         outer_sdf = None
         out_data_mode = self._config['parsed_out_data_mode_dict']
         for i, (name, attrs) in enumerate(out_data_mode.items()):
-            tpc_mask = tpc.get_fdata() > (0.5 + i)
+            tpc_mask = tpc > (0.5 + i)
             imname = f'stacked-mask_tpc_{name}-mask'
             self._save_image(tpc_mask, imname)
             sdf_ind = attrs.index('sdf')
@@ -200,18 +211,21 @@ class Tester:
 
     def _save_image(self, im, name, nii=False, queue=True):
         obj = nib.load(self._tester.loader.dataset.name)
-        filename = Path(self._tester.loader.dataset.name).name
-        filename = re.sub(r'\.nii(\.gz)*$', '', filename)
-        filename = '_'.join([filename, name])
-        filename = Path(self.args.output_dir, filename).with_suffix('.nii.gz')
         out_obj = im if nii else nib.Nifti1Image(im, obj.affine, obj.header)
+        filename = self._join_output_filename(name)
         if queue:
             self._queue.put((filename, out_obj))
         else:
-            self._desc_bar.set_description(f'saved {filename}')
+            self._desc_bar.update_message(filename)
             out_obj.to_filename(filename)
-            self._desc_bar.refresh()
         return str(filename)
+
+    def _join_output_filename(self, name):
+        fn = Path(self._tester.loader.dataset.name).name
+        fn = re.sub(r'\.nii(\.gz)*$', '', fn)
+        fn = '_'.join([fn, name])
+        fn = Path(self.args.output_dir, fn).with_suffix('.nii.gz')
+        return fn
 
 
 class TesterDataset(Tester):
@@ -256,7 +270,7 @@ class Tester_:
         predictions = OrderedDict()
         with torch.no_grad():
             desc = Path(self.loader.dataset.name).name
-            for data in tqdm(self.loader, desc=desc):
+            for data in tqdm(self.loader, desc=desc, position=0):
                 data = [i.data for i in data]
                 data = torch.cat(data, dim=1).to(self.device)
                 pred = self.model(data)
