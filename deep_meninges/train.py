@@ -329,3 +329,5 @@ class TrainerValid(Trainer):
         self._record_predictions(pred, 'v')
         self._record_losses(losses, total_loss, 'v')
         self._contents.update_valid_loss(total_loss)
+
+        self._valid_loader.dataset.update()
