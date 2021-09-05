@@ -39,9 +39,8 @@ class ImageThread(threading.Thread):
 
 
 class Tester:
-    def __init__(self, args, bar_position=0):
+    def __init__(self, args):
         self.args = args
-        self.bar_position = bar_position
         self._parse_args()
         self._get_device()
         self._load_model()
@@ -53,12 +52,12 @@ class Tester:
     def _create_prog_bar(self):
         num = len(self._tester.loader)
         desc = Path(self._tester.loader.dataset.name).name
-        self._prog_bar = trange(num, desc=desc, position=self.bar_position)
-        self._tester.prog_bar = self._prog_bar
+        self._prog_bar = trange(0)
+        self._bar_position = 1
 
     def _start_thread(self):
         self._queue = Queue()
-        self._desc_bar = tqdm(bar_format='{desc}', position=self.bar_position+1)
+        self._desc_bar = tqdm(bar_format='{desc}', position=self._bar_position)
 
         def _update_message(self, filename):
             desc = f'{self.tpc_message}saved {filename}'
@@ -82,6 +81,10 @@ class Tester:
     def _close_thread(self):
         self._queue.put(None)
         self._image_thread.join()
+
+    def _close_prog_bars(self):
+        self._desc_bar.close()
+        self._prog_bar.close()
 
     def _parse_args(self):
         Path(self.args.output_dir).mkdir(exist_ok=True, parents=True)
@@ -144,6 +147,7 @@ class Tester:
         pred = self._tester.test()
         self._post_process(pred)
         self._close_thread()
+        self._close_prog_bars()
 
     def _post_process(self, pred):
         comb_pred = self._comb_pred(pred)
@@ -236,11 +240,12 @@ class Tester:
 
 class TesterDataset(Tester):
     def _create_prog_bar(self):
-        num = len(self._testers[0].loader)
-        desc = Path(self._testers[0].loader.dataset.name).name
-        self._prog_bar = trange(num, desc=desc, position=self.bar_position)
+        num = len(self._testers)
+        self._tot_prog_bar = trange(num, desc='Finished # images', position=0)
+        self._prog_bar = trange(0, position=1)
         for tester in self._testers:
             tester.prog_bar = self._prog_bar
+        self._bar_position = 2
 
     def _create_testers(self):
         self._testers = list()
@@ -248,11 +253,18 @@ class TesterDataset(Tester):
             tester = self._create_tester(filenames)
             self._testers.append(tester)
 
+    def _close_prog_bars(self):
+        self._desc_bar.close()
+        self._prog_bar.close()
+        self._tot_prog_bar.close()
+
     def test(self):
         for self._tester in self._testers:
             pred = self._tester.test()
             self._post_process(pred)
+            self._tot_prog_bar.update()
         self._close_thread()
+        self._close_prog_bars()
 
     def _find_images(self):
         loading_order = self._config['parsed_in_data_mode']
@@ -282,8 +294,7 @@ class Tester_:
     def test(self):
         self.model = self.model.eval()
         predictions = OrderedDict()
-        self.prog_bar.n = len(self.loader)
-        self.prog_bar.reset()
+        self._reset_prog_bar()
         with torch.no_grad():
             for data in self.loader:
                 self.prog_bar.update()
@@ -293,6 +304,12 @@ class Tester_:
                 self._add_slices(pred, predictions)
         self._chunk_predictions(predictions)
         return predictions
+
+    def _reset_prog_bar(self):
+        desc = Path(self.loader.dataset.name).name
+        self.prog_bar.set_description_str(desc)
+        self.prog_bar.total = len(self.loader)
+        self.prog_bar.reset()
 
     def _add_slices(self, pred, predictions):
         for name, ps in pred.items():
