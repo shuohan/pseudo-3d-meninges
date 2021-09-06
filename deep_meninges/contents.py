@@ -152,12 +152,12 @@ class ContentsValid(Contents):
             self.best_model_state = deepcopy(self.model.state_dict())
             self.best_optim_state = deepcopy(self.optim.state_dict())
 
-    def get_model_state_dict(self):
-        return self.best_model_state
-
-    def get_optim_state_dict(self):
-        return self.best_optim_state
-
+#     def get_model_state_dict(self):
+#         return self.best_model_state
+#
+#     def get_optim_state_dict(self):
+#         return self.best_optim_state
+#
     def load_state_dicts(self, checkpoint):
         super().load_state_dicts(checkpoint)
         self.best_model_state = checkpoint['model_state_dict']
