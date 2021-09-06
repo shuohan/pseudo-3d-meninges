@@ -20,7 +20,8 @@ def padcrop(image, target_shape, use_channels=True):
 def calc_padcrop_bbox(source_shape, target_shape):
     bbox = list()
     for ss, ts in zip(source_shape, target_shape):
-        left = (ss - ts) // 2
+        diff = ss - ts
+        left = np.abs(diff) // 2 * np.sign(diff)
         right = left + ts
         bbox.append(slice(left, right))
     return tuple(bbox)
