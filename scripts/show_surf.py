@@ -4,6 +4,7 @@ import argparse
 parser = argparse.ArgumentParser()
 parser.add_argument('-i', '--image')
 parser.add_argument('-s', '--surfaces', nargs='+')
+parser.add_argument('-z', '--zoom', default=1, type=float)
 parser.add_argument('-d', '--discretized-surfaces', nargs='+')
 parser.add_argument('-o', '--output-dir')
 parser.add_argument('-V', '--view', default='axial',
@@ -22,6 +23,7 @@ import PIL
 from improc3d import transform_to_axial, transform_to_coronal, quantile_scale
 from improc3d import transform_to_sagittal, crop3d
 from pathlib import Path
+from resize.scipy import resize
 
 
 BCK_COLOR = [0, 0, 0, 0]
@@ -65,9 +67,9 @@ def subdivide(mesh, pitch, max_iter=None):
     return hit
 
 
-def discretize_mesh(mesh, shape):
+def discretize_mesh(mesh, shape, pitch=1):
     min_v = np.min(np.array(mesh.vertices), axis=0)
-    vertices = subdivide(mesh, 1)
+    vertices = subdivide(mesh, pitch)
     # mesh_discretized = mesh.voxelized(pitch=1.0).matrix
     result = np.zeros(shape)
     result[vertices[:, 0],
@@ -101,9 +103,15 @@ Path(args.output_dir).mkdir(exist_ok=True, parents=True)
 
 print('Load image', args.image)
 im_obj = nib.load(args.image)
+im = im_obj.get_fdata()
+if args.zoom > 1:
+    im = resize(im, (1 / args.zoom, 1 / args.zoom, 1 / args.zoom), order=3)
+im_shape = im.shape
+
 if args.slice_ind is None:
-    args.slice_ind = im_obj.shape[2] // 2
-im = transform(im_obj.get_fdata(), im_obj.affine, coarse=True)
+    args.slice_ind = im_shape[2] // 2
+
+im = transform(im, im_obj.affine, coarse=True)
 im = quantile_scale(im, lower_th=0.0, upper_th=255.0).astype(np.uint8)
 
 d_surfaces = list()
@@ -111,7 +119,7 @@ if args.discretized_surfaces is None:
     for surf_fn in args.surfaces:
         print('Load surface', surf_fn)
         surf = read_vtk_to_trimesh(surf_fn)
-        d_surf = discretize_mesh(surf, im_obj.shape)
+        d_surf = discretize_mesh(surf, im_shape, pitch=1/args.zoom)
         d_surf_obj = nib.Nifti1Image(d_surf, im_obj.affine, im_obj.header)
         d_surf_fn = Path(surf_fn).name
         d_surf_fn = Path(args.output_dir, d_surf_fn).with_suffix('.nii.gz')
