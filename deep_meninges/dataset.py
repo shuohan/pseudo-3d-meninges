@@ -209,7 +209,6 @@ class DatasetMulti(Dataset_):
                 range(len(ds)),
                 k=self._num_slices_per_dataset
             )
-            indices = deque(indices)
             self._indices.append(indices)
 
     def _get_consecutive_indices(self):
@@ -217,9 +216,8 @@ class DatasetMulti(Dataset_):
         for i, ds in enumerate(self.datasets):
             indices = np.linspace(0, len(ds), self.num_slices_per_epoch + 2)
             indices = np.round(indices[1:-1]).astype(int).tolist()
-            indices = indices * self.num_epochs
             random.shuffle(indices)
-            indices = deque(indices)
+            indices = indices * self.num_epochs
             self._indices.append(indices)
 
     def __len__(self):
@@ -229,8 +227,10 @@ class DatasetMulti(Dataset_):
         ds_ind = self._split_index(index)
         dataset = self.datasets[ds_ind]
         indices = self._indices[ds_ind]
-        index = indices.pop()
-        return dataset[index]
+        remap_index = indices[index]
+        data = dataset[remap_index]
+        # print(index, remap_index, indices, data[0].name)
+        return data
 
     def _split_index(self, index):
         num_batches_per_ds = self.num_slices_per_epoch // self.batch_size
@@ -241,6 +241,8 @@ class DatasetMulti(Dataset_):
 
     def update(self):
         self._dataset_order = np.roll(self._dataset_order, 1)
+        for i in range(len(self._indices)):
+            self._indices[i] = self._indices[i][self.num_slices_per_epoch:]
 
 
 class ImageSlices:
@@ -431,7 +433,7 @@ class SubjectDataMemmap(SubjectData):
 class FlipLR:
     def __call__(self, *images):
         results = images
-        need_to_flip = np.random.uniform(0, 1) < 0.5
+        need_to_flip = random.uniform(0, 1) < 0.5
         need_to_flip = ('axis-0' not in images[0].name) and need_to_flip
         if need_to_flip:
             results = list()
@@ -453,7 +455,7 @@ class Scale:
 
     def __call__(self, *images):
         results = images
-        need_to_scale = np.random.uniform(0, 1) < 0.5
+        need_to_scale = random.uniform(0, 1) < 0.5
         if need_to_scale:
             results = list()
             scales = self._sample_scales()
@@ -468,8 +470,8 @@ class Scale:
         return results
 
     def _sample_scales(self):
-        flip_signs = np.random.choice([False, True], 2)
-        scales = np.random.uniform(1, self.scale, 2)
+        flip_signs = random.choices([False, True], k=2)
+        scales = [random.uniform(1, self.scale) for _ in range(2)]
         result = list()
         for f, s in zip(flip_signs, scales):
             result.append(1 / s if f else s)
