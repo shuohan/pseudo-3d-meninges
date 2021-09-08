@@ -150,4 +150,5 @@ for surf in colored_surfaces:
 
 im_pil = im_pil.transpose(PIL.Image.TRANSPOSE)
 fn = re.sub(r'\.nii(\.gz)*$', '', Path(args.image).name)
+fn = '_'.join([fn, args.view, f'slice{str(args.slice_ind).zfill(3)}'])
 im_pil.save(Path(args.output_dir, fn).with_suffix('.png'))
