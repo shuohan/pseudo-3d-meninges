@@ -13,7 +13,7 @@ parser.add_argument('-n', '--num-slices-per-epoch', type=int, default=2000,
                     help='Number of slices per epoch per dataset.')
 parser.add_argument('-N', '--num-valid-slices-per-epoch', type=int,
                     default=2000, help='Number of slices per epoch per dataset.')
-parser.add_argument('-B', '--test-batch-size', type=int, default=1,
+parser.add_argument('-B', '--test-batch-size', type=int, default=8,
                     help='Testing batch size.')
 parser.add_argument('-w', '--num-workers', type=int, default=2,
                     help='Number of DataLoader multiprocessing workers.')

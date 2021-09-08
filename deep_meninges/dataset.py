@@ -229,7 +229,6 @@ class DatasetMulti(Dataset_):
         indices = self._indices[ds_ind]
         remap_index = indices[index]
         data = dataset[remap_index]
-        # print(index, remap_index, indices, data[0].name)
         return data
 
     def _split_index(self, index):
