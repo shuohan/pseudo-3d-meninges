@@ -54,6 +54,7 @@ class Tester:
         desc = Path(self._tester.loader.dataset.name).name
         self._prog_bar = trange(0)
         self._bar_position = 1
+        self._tester.prog_bar = self._prog_bar
 
     def _start_thread(self):
         self._queue = Queue()
